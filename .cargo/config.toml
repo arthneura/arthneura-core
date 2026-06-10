@@ -1,0 +1,5 @@
+[build]
+target = "aarch64-apple-darwin"
+
+[env]
+SKIP_WASM_BUILD = "1"
