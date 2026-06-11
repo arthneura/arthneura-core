@@ -162,3 +162,9 @@ impl pallet_template::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type WeightInfo = pallet_template::weights::SubstrateWeight<Runtime>;
 }
+
+/// Configure the pallet-agent-registry in pallets/pallet-agent-registry.
+impl pallet_agent_registry::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type WeightInfo = ();
+}
