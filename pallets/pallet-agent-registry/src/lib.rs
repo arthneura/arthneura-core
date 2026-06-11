@@ -53,22 +53,28 @@ pub mod pallet {
     ///
     /// Transitions: `Active` → `Suspended` → `Revoked`.
     /// Revoked is terminal. Suspended → Active requires governance origin.
-    #[derive(
-        Clone, PartialEq, Eq, Encode, Decode,
-        DecodeWithMemTracking, TypeInfo, MaxEncodedLen, RuntimeDebug,
-    )]
-    pub enum AgentStatus {
-        /// Profile is live and queryable.
-        Active,
-        /// Temporarily blocked. Reads allowed, writes blocked.
-        Suspended,
-        /// Permanently revoked. Kept on-chain for audit trail.
-        Revoked,
-    }
+   #[derive(
+    Clone,
+    PartialEq,
+    Eq,
+    Encode,
+    Decode,
+    DecodeWithMemTracking,
+    TypeInfo,
+    MaxEncodedLen,
+    RuntimeDebug,
+    Default,
+)]
+pub enum AgentStatus {
+    /// The agent identity is live and fully operational.
+    #[default]
+    Active,
+    /// The agent has been temporarily suspended.
+    Suspended,
+    /// The agent identity has been permanently revoked.
+    Revoked,
+}
 
-    impl Default for AgentStatus {
-        fn default() -> Self { AgentStatus::Active }
-    }
 
     // -- AgentProfile ---------------------------------------------------------
 

@@ -1,5 +1,5 @@
-[build]
-target = "aarch64-apple-darwin"
-
 [env]
 SKIP_WASM_BUILD = "1"
+
+[target.wasm32-unknown-unknown]
+linker = "/opt/homebrew/bin/wasm-ld"
