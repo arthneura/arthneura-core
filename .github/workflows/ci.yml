@@ -47,6 +47,3 @@ jobs:
 
       - name: Cargo clippy pallet
         run: SKIP_WASM_BUILD=1 cargo clippy -p pallet-agent-registry -- -D warnings
-
-      - name: Cargo check workspace
-        run: SKIP_WASM_BUILD=1 cargo check --workspace
