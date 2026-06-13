@@ -25,7 +25,7 @@ mod tests;
 #[frame_support::pallet]
 pub mod pallet {
     use crate::WeightInfo;
-    use frame_support::pallet_prelude::*;
+    use frame_support::{pallet_prelude::*, sp_runtime::Saturating};
     use frame_system::pallet_prelude::*;
 
     // -- Constants ------------------------------------------------------------
@@ -126,6 +126,10 @@ pub mod pallet {
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
         /// Benchmarked weight provider. Use `()` in dev/test.
         type WeightInfo: WeightInfo;
+        /// Minimum blocks between two stars from the same giver to the same receiver.
+        /// Production: 1200 blocks (~2 hours at 6s/block). Tests: 10 blocks.
+        #[pallet::constant]
+        type StarCooldown: Get<BlockNumberFor<Self>>;
     }
 
     // -- Pallet ---------------------------------------------------------------
@@ -153,12 +157,20 @@ pub mod pallet {
     #[pallet::getter(fn active_agent_count)]
     pub type ActiveAgentCount<T: Config> = StorageValue<_, u32, ValueQuery>;
 
-    /// Anti-sybil star ledger: (giver DID, receiver DID) → bool.
-    /// Ensures one agent can star another at most once.
+    /// Anti-sybil star ledger: (giver DID, receiver DID) → last star block.
+    /// Zero means never starred. Non-zero is the block number of the last star.
+    /// Used to enforce StarCooldown between repeated stars.
     #[pallet::storage]
     #[pallet::getter(fn star_givers)]
-    pub type StarGivers<T: Config> =
-        StorageDoubleMap<_, Blake2_128Concat, Did, Blake2_128Concat, Did, bool, ValueQuery>;
+    pub type StarGivers<T: Config> = StorageDoubleMap<
+        _,
+        Blake2_128Concat,
+        Did,
+        Blake2_128Concat,
+        Did,
+        BlockNumberFor<T>,
+        ValueQuery,
+    >;
 
     // -- Events ---------------------------------------------------------------
 
@@ -171,6 +183,10 @@ pub mod pallet {
         AgentProfileUpdated { did: Did },
         /// Agent lifecycle status changed.
         AgentStatusChanged { did: Did, new_status: AgentStatus },
+        /// A star was given to an agent.
+        StarGiven { giver: Did, receiver: Did },
+        /// A star was removed from an agent.
+        StarRemoved { giver: Did, receiver: Did },
     }
 
     // -- Errors ---------------------------------------------------------------
@@ -187,6 +203,12 @@ pub mod pallet {
         AgentRevoked,
         /// Controller has reached the 64-agent registration limit.
         TooManyAgentsForController,
+        /// Star cooldown has not expired — giver must wait before re-starring.
+        CooldownNotExpired,
+        /// Giver has not starred this receiver — cannot remove a non-existent star.
+        NotStarred,
+        /// An agent cannot give a star to itself.
+        CannotStarSelf,
     }
 
     // -- Calls ----------------------------------------------------------------
@@ -308,6 +330,104 @@ pub mod pallet {
 
             Ok(())
         }
+
+        /// Give a reputation star to another agent.
+        ///
+        /// Caller must control a registered, non-revoked agent DID.
+        /// Self-starring is rejected. Repeated stars are rate-limited by
+        /// [`Config::StarCooldown`] blocks. On success, receiver's
+        /// `reputation_score` increments by 1.
+        /// Emits [`Event::StarGiven`] on success.
+        #[pallet::call_index(3)]
+        #[pallet::weight(T::WeightInfo::give_star())]
+        pub fn give_star(origin: OriginFor<T>, receiver: Did) -> DispatchResult {
+            // -- 1. Authenticate caller ---------------------------------------
+            let giver = ensure_signed(origin)?;
+
+            // -- 2. O(1) giver DID lookup via reverse index -------------------
+            let giver_dids = ControllerAgents::<T>::get(&giver);
+            let giver_did = giver_dids.first().copied().ok_or(Error::<T>::DidNotFound)?;
+
+            // -- 3. Guard: cannot star yourself -------------------------------
+            ensure!(giver_did != receiver, Error::<T>::CannotStarSelf);
+
+            // -- 4. Guard: receiver must exist and be active ------------------
+            let receiver_profile =
+                AgentProfiles::<T>::get(receiver).ok_or(Error::<T>::DidNotFound)?;
+            ensure!(
+                receiver_profile.status != AgentStatus::Revoked,
+                Error::<T>::AgentRevoked
+            );
+
+            // -- 5. Cooldown check -------------------------------------------
+            // Zero means never starred. Non-zero is the last star block.
+            let last_star = StarGivers::<T>::get(giver_did, receiver);
+            let current_block = <frame_system::Pallet<T>>::block_number();
+            if last_star > BlockNumberFor::<T>::from(0u32) {
+                ensure!(
+                    current_block >= last_star.saturating_add(T::StarCooldown::get()),
+                    Error::<T>::CooldownNotExpired
+                );
+            }
+            // -- 6. Record star with current block number --------------------
+            StarGivers::<T>::insert(giver_did, receiver, current_block);
+
+            // -- 7. Increment receiver reputation ----------------------------
+            AgentProfiles::<T>::try_mutate(receiver, |maybe_profile| {
+                let profile = maybe_profile.as_mut().ok_or(Error::<T>::DidNotFound)?;
+                profile.reputation_score = profile.reputation_score.saturating_add(1);
+                Ok::<(), DispatchError>(())
+            })?;
+
+            // -- 8. Emit event -----------------------------------------------
+            Self::deposit_event(Event::StarGiven {
+                giver: giver_did,
+                receiver,
+            });
+
+            Ok(())
+        }
+
+        /// Remove a previously given star from another agent.
+        ///
+        /// Resets the star ledger entry to zero (preserves cooldown history).
+        /// Receiver's `reputation_score` decrements by 1 (saturating).
+        /// Emits [`Event::StarRemoved`] on success.
+        #[pallet::call_index(4)]
+        #[pallet::weight(T::WeightInfo::remove_star())]
+        pub fn remove_star(origin: OriginFor<T>, receiver: Did) -> DispatchResult {
+            // -- 1. Authenticate caller ---------------------------------------
+            let giver = ensure_signed(origin)?;
+
+            // -- 2. O(1) giver DID lookup via reverse index -------------------
+            let giver_dids = ControllerAgents::<T>::get(&giver);
+            let giver_did = giver_dids.first().copied().ok_or(Error::<T>::DidNotFound)?;
+
+            // -- 3. Guard: star must exist (non-zero = previously starred) ----
+            let last_star = StarGivers::<T>::get(giver_did, receiver);
+            ensure!(
+                last_star > BlockNumberFor::<T>::from(0u32),
+                Error::<T>::NotStarred
+            );
+
+            // -- 4. Reset star to zero — preserves slot, clears cooldown -----
+            StarGivers::<T>::insert(giver_did, receiver, BlockNumberFor::<T>::from(0u32));
+
+            // -- 5. Decrement receiver reputation (saturating) ----------------
+            AgentProfiles::<T>::try_mutate(receiver, |maybe_profile| {
+                let profile = maybe_profile.as_mut().ok_or(Error::<T>::DidNotFound)?;
+                profile.reputation_score = profile.reputation_score.saturating_sub(1);
+                Ok::<(), DispatchError>(())
+            })?;
+
+            // -- 6. Emit event -----------------------------------------------
+            Self::deposit_event(Event::StarRemoved {
+                giver: giver_did,
+                receiver,
+            });
+
+            Ok(())
+        }
     }
 }
 
@@ -319,6 +439,8 @@ pub trait WeightInfo {
     fn register_agent() -> Weight;
     fn update_profile() -> Weight;
     fn set_agent_status() -> Weight;
+    fn give_star() -> Weight;
+    fn remove_star() -> Weight;
 }
 
 pub struct SubstrateWeight<T>(core::marker::PhantomData<T>);
@@ -333,6 +455,12 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
     fn set_agent_status() -> Weight {
         Weight::from_parts(6_000, 0)
     }
+    fn give_star() -> Weight {
+        Weight::from_parts(8_000, 0)
+    }
+    fn remove_star() -> Weight {
+        Weight::from_parts(8_000, 0)
+    }
 }
 
 impl WeightInfo for () {
@@ -344,5 +472,11 @@ impl WeightInfo for () {
     }
     fn set_agent_status() -> Weight {
         Weight::from_parts(6_000, 0)
+    }
+    fn give_star() -> Weight {
+        Weight::from_parts(8_000, 0)
+    }
+    fn remove_star() -> Weight {
+        Weight::from_parts(8_000, 0)
     }
 }

@@ -21,6 +21,7 @@ impl frame_system::Config for Runtime {
 impl pallet_agent_registry::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     type WeightInfo = ();
+    type StarCooldown = frame_support::traits::ConstU64<10>;
 }
 
 pub fn new_test_ext() -> sp_io::TestExternalities {

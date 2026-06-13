@@ -364,3 +364,278 @@ fn set_agent_status_not_controller_fails() {
         );
     });
 }
+
+// -- give_star / remove_star --------------------------------------------------
+
+#[test]
+fn give_star_works() {
+    new_test_ext().execute_with(|| {
+        let alice = 1u64;
+        let bob = 2u64;
+        let alice_did = did(1);
+        let bob_did = did(2);
+
+        assert_ok!(AgentRegistry::register_agent(
+            RuntimeOrigin::signed(alice),
+            alice_did,
+            CAP_DATA_PROVIDER,
+            metadata(),
+            label(),
+        ));
+        assert_ok!(AgentRegistry::register_agent(
+            RuntimeOrigin::signed(bob),
+            bob_did,
+            CAP_DATA_PROVIDER,
+            metadata(),
+            label(),
+        ));
+
+        assert_ok!(AgentRegistry::give_star(
+            RuntimeOrigin::signed(alice),
+            bob_did,
+        ));
+
+        let profile = AgentRegistry::agent_profile(bob_did).unwrap();
+        assert_eq!(profile.reputation_score, 1);
+
+        System::assert_last_event(
+            Event::StarGiven {
+                giver: alice_did,
+                receiver: bob_did,
+            }
+            .into(),
+        );
+    });
+}
+
+#[test]
+fn give_star_cannot_star_self() {
+    new_test_ext().execute_with(|| {
+        let alice = 1u64;
+        let alice_did = did(1);
+
+        assert_ok!(AgentRegistry::register_agent(
+            RuntimeOrigin::signed(alice),
+            alice_did,
+            CAP_DATA_PROVIDER,
+            metadata(),
+            label(),
+        ));
+
+        assert_noop!(
+            AgentRegistry::give_star(RuntimeOrigin::signed(alice), alice_did),
+            Error::<Runtime>::CannotStarSelf
+        );
+    });
+}
+
+#[test]
+fn give_star_cooldown_enforced() {
+    new_test_ext().execute_with(|| {
+        let alice = 1u64;
+        let bob = 2u64;
+        let alice_did = did(1);
+        let bob_did = did(2);
+
+        assert_ok!(AgentRegistry::register_agent(
+            RuntimeOrigin::signed(alice),
+            alice_did,
+            CAP_DATA_PROVIDER,
+            metadata(),
+            label(),
+        ));
+        assert_ok!(AgentRegistry::register_agent(
+            RuntimeOrigin::signed(bob),
+            bob_did,
+            CAP_DATA_PROVIDER,
+            metadata(),
+            label(),
+        ));
+
+        // First star — ok
+        assert_ok!(AgentRegistry::give_star(
+            RuntimeOrigin::signed(alice),
+            bob_did
+        ));
+
+        // Immediate re-star — cooldown not expired
+        assert_noop!(
+            AgentRegistry::give_star(RuntimeOrigin::signed(alice), bob_did),
+            Error::<Runtime>::CooldownNotExpired
+        );
+    });
+}
+
+#[test]
+fn give_star_after_cooldown_works() {
+    new_test_ext().execute_with(|| {
+        let alice = 1u64;
+        let bob = 2u64;
+        let alice_did = did(1);
+        let bob_did = did(2);
+
+        assert_ok!(AgentRegistry::register_agent(
+            RuntimeOrigin::signed(alice),
+            alice_did,
+            CAP_DATA_PROVIDER,
+            metadata(),
+            label(),
+        ));
+        assert_ok!(AgentRegistry::register_agent(
+            RuntimeOrigin::signed(bob),
+            bob_did,
+            CAP_DATA_PROVIDER,
+            metadata(),
+            label(),
+        ));
+
+        // Star at block 1
+        assert_ok!(AgentRegistry::give_star(
+            RuntimeOrigin::signed(alice),
+            bob_did
+        ));
+
+        // Advance past cooldown (10 blocks in mock)
+        System::set_block_number(12);
+
+        // Re-star after cooldown — ok
+        assert_ok!(AgentRegistry::give_star(
+            RuntimeOrigin::signed(alice),
+            bob_did
+        ));
+
+        let profile = AgentRegistry::agent_profile(bob_did).unwrap();
+        assert_eq!(profile.reputation_score, 2);
+    });
+}
+
+#[test]
+fn remove_star_works() {
+    new_test_ext().execute_with(|| {
+        let alice = 1u64;
+        let bob = 2u64;
+        let alice_did = did(1);
+        let bob_did = did(2);
+
+        assert_ok!(AgentRegistry::register_agent(
+            RuntimeOrigin::signed(alice),
+            alice_did,
+            CAP_DATA_PROVIDER,
+            metadata(),
+            label(),
+        ));
+        assert_ok!(AgentRegistry::register_agent(
+            RuntimeOrigin::signed(bob),
+            bob_did,
+            CAP_DATA_PROVIDER,
+            metadata(),
+            label(),
+        ));
+
+        assert_ok!(AgentRegistry::give_star(
+            RuntimeOrigin::signed(alice),
+            bob_did
+        ));
+        assert_eq!(
+            AgentRegistry::agent_profile(bob_did)
+                .unwrap()
+                .reputation_score,
+            1
+        );
+
+        assert_ok!(AgentRegistry::remove_star(
+            RuntimeOrigin::signed(alice),
+            bob_did
+        ));
+        assert_eq!(
+            AgentRegistry::agent_profile(bob_did)
+                .unwrap()
+                .reputation_score,
+            0
+        );
+
+        System::assert_last_event(
+            Event::StarRemoved {
+                giver: alice_did,
+                receiver: bob_did,
+            }
+            .into(),
+        );
+    });
+}
+
+#[test]
+fn remove_star_not_starred_fails() {
+    new_test_ext().execute_with(|| {
+        let alice = 1u64;
+        let bob = 2u64;
+        let alice_did = did(1);
+        let bob_did = did(2);
+
+        assert_ok!(AgentRegistry::register_agent(
+            RuntimeOrigin::signed(alice),
+            alice_did,
+            CAP_DATA_PROVIDER,
+            metadata(),
+            label(),
+        ));
+        assert_ok!(AgentRegistry::register_agent(
+            RuntimeOrigin::signed(bob),
+            bob_did,
+            CAP_DATA_PROVIDER,
+            metadata(),
+            label(),
+        ));
+
+        assert_noop!(
+            AgentRegistry::remove_star(RuntimeOrigin::signed(alice), bob_did),
+            Error::<Runtime>::NotStarred
+        );
+    });
+}
+
+#[test]
+fn remove_star_resets_cooldown() {
+    new_test_ext().execute_with(|| {
+        let alice = 1u64;
+        let bob = 2u64;
+        let alice_did = did(1);
+        let bob_did = did(2);
+
+        assert_ok!(AgentRegistry::register_agent(
+            RuntimeOrigin::signed(alice),
+            alice_did,
+            CAP_DATA_PROVIDER,
+            metadata(),
+            label(),
+        ));
+        assert_ok!(AgentRegistry::register_agent(
+            RuntimeOrigin::signed(bob),
+            bob_did,
+            CAP_DATA_PROVIDER,
+            metadata(),
+            label(),
+        ));
+
+        // Give star
+        assert_ok!(AgentRegistry::give_star(
+            RuntimeOrigin::signed(alice),
+            bob_did
+        ));
+
+        // Remove star — resets to zero
+        assert_ok!(AgentRegistry::remove_star(
+            RuntimeOrigin::signed(alice),
+            bob_did
+        ));
+
+        // Re-star immediately — should succeed since zero means never starred
+        assert_ok!(AgentRegistry::give_star(
+            RuntimeOrigin::signed(alice),
+            bob_did
+        ));
+
+        let profile = AgentRegistry::agent_profile(bob_did).unwrap();
+        assert_eq!(profile.reputation_score, 1);
+    });
+}
