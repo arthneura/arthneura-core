@@ -153,6 +153,13 @@ pub mod pallet {
     #[pallet::getter(fn active_agent_count)]
     pub type ActiveAgentCount<T: Config> = StorageValue<_, u32, ValueQuery>;
 
+    /// Anti-sybil star ledger: (giver DID, receiver DID) → bool.
+    /// Ensures one agent can star another at most once.
+    #[pallet::storage]
+    #[pallet::getter(fn star_givers)]
+    pub type StarGivers<T: Config> =
+        StorageDoubleMap<_, Blake2_128Concat, Did, Blake2_128Concat, Did, bool, ValueQuery>;
+
     // -- Events ---------------------------------------------------------------
 
     #[pallet::event]
