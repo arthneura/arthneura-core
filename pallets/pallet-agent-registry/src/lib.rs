@@ -448,18 +448,28 @@ pub struct SubstrateWeight<T>(core::marker::PhantomData<T>);
 impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
     fn register_agent() -> Weight {
         Weight::from_parts(10_000, 0)
+            .saturating_add(Weight::from_parts(25_000_000 * 3, 0))
+            .saturating_add(Weight::from_parts(100_000_000 * 3, 0))
     }
     fn update_profile() -> Weight {
         Weight::from_parts(8_000, 0)
+            .saturating_add(Weight::from_parts(25_000_000, 0))
+            .saturating_add(Weight::from_parts(100_000_000, 0))
     }
     fn set_agent_status() -> Weight {
         Weight::from_parts(6_000, 0)
+            .saturating_add(Weight::from_parts(25_000_000 * 2, 0))
+            .saturating_add(Weight::from_parts(100_000_000 * 2, 0))
     }
     fn give_star() -> Weight {
         Weight::from_parts(8_000, 0)
+            .saturating_add(Weight::from_parts(25_000_000 * 4, 0))
+            .saturating_add(Weight::from_parts(100_000_000 * 2, 0))
     }
     fn remove_star() -> Weight {
         Weight::from_parts(8_000, 0)
+            .saturating_add(Weight::from_parts(25_000_000 * 3, 0))
+            .saturating_add(Weight::from_parts(100_000_000 * 2, 0))
     }
 }
 
