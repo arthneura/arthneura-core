@@ -112,6 +112,8 @@ pub mod pallet {
         pub status: AgentStatus,
         /// Block number when this profile was registered.
         pub registered_at: BlockNumberFor<T>,
+        /// False until L2 SQIsign proof verified via [`Call::verify_agent_quantum_proof`].
+        pub is_verified: bool,
         /// Optional IPFS CID or structured metadata. Max 256 bytes.
         pub metadata: BoundedVec<u8, ConstU32<MAX_METADATA_LEN>>,
         /// Optional human-readable display name. Max 64 bytes.
@@ -246,6 +248,7 @@ pub mod pallet {
                 reputation_score: 0_u32,
                 status: AgentStatus::Active,
                 registered_at: <frame_system::Pallet<T>>::block_number(),
+                is_verified: false,
                 metadata,
                 label,
             };
