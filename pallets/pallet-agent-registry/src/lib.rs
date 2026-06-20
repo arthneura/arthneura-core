@@ -36,6 +36,12 @@ pub mod pallet {
     /// Max bytes for the display `label` field in [`AgentProfile`].
     pub const MAX_LABEL_LEN: u32 = 64;
 
+    /// ML-DSA-65 public key length in bytes (FIPS 204 fixed constant).
+    pub const MAX_PUBKEY_LEN: u32 = 1952;
+
+    /// ML-DSA-65 signature length in bytes (FIPS 204 fixed constant).
+    pub const MAX_SIG_LEN: u32 = 3309;
+
     // -- Types ----------------------------------------------------------------
 
     /// 32-byte Decentralized Identifier derived from the agent's public key.
@@ -81,6 +87,32 @@ pub mod pallet {
         Revoked,
     }
 
+    // -- QuantumScheme ----------------------------------------------------------
+
+    /// Post-quantum signature scheme used to verify an agent's identity.
+    ///
+    /// Stored per-agent (not globally) so the registry stays crypto-agile —
+    /// new schemes can be added as variants later without invalidating
+    /// agents already verified under an earlier scheme.
+    #[derive(
+        Clone,
+        Copy,
+        PartialEq,
+        Eq,
+        Encode,
+        Decode,
+        DecodeWithMemTracking,
+        TypeInfo,
+        MaxEncodedLen,
+        RuntimeDebug,
+        Default,
+    )]
+    pub enum QuantumScheme {
+        /// FIPS 204 ML-DSA, parameter set 65 (NIST security category 3).
+        #[default]
+        MlDsa65,
+    }
+
     // -- AgentProfile ---------------------------------------------------------
 
     /// On-chain identity card for an ArthNeura agent.
@@ -112,8 +144,10 @@ pub mod pallet {
         pub status: AgentStatus,
         /// Block number when this profile was registered.
         pub registered_at: BlockNumberFor<T>,
-        /// False until L2 SQIsign proof verified via [`Call::verify_agent_quantum_proof`].
+        /// False until ML-DSA proof verified via [`Call::register_agent`].
         pub is_verified: bool,
+        /// Post-quantum scheme used for this agent's identity proof.
+        pub quantum_scheme: QuantumScheme,
         /// Optional IPFS CID or structured metadata. Max 256 bytes.
         pub metadata: BoundedVec<u8, ConstU32<MAX_METADATA_LEN>>,
         /// Optional human-readable display name. Max 64 bytes.
@@ -136,7 +170,13 @@ pub mod pallet {
 
     // -- Pallet ---------------------------------------------------------------
 
+    /// Bumped from 0 -> 1 for the `quantum_scheme` field added to [`AgentProfile`].
+    /// No migration shipped: pre-launch, no persistent state to upgrade yet.
+    const STORAGE_VERSION: frame_support::traits::StorageVersion =
+        frame_support::traits::StorageVersion::new(1);
+
     #[pallet::pallet]
+    #[pallet::storage_version(STORAGE_VERSION)]
     pub struct Pallet<T>(_);
 
     // -- Storage --------------------------------------------------------------
@@ -211,6 +251,10 @@ pub mod pallet {
         NotStarred,
         /// An agent cannot give a star to itself.
         CannotStarSelf,
+        /// Submitted public key's hash does not equal the registered DID.
+        PubkeyDidMismatch,
+        /// ML-DSA signature verification failed against the registration challenge.
+        InvalidQuantumProof,
     }
 
     // -- Calls ----------------------------------------------------------------
