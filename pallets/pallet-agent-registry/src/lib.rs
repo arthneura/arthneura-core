@@ -27,6 +27,7 @@ pub mod pallet {
     use crate::WeightInfo;
     use frame_support::{pallet_prelude::*, sp_runtime::Saturating};
     use frame_system::pallet_prelude::*;
+    use ml_dsa::{KeyInit, MlDsa65, Signature, Verifier, VerifyingKey};
 
     // -- Constants ------------------------------------------------------------
 
@@ -41,6 +42,12 @@ pub mod pallet {
 
     /// ML-DSA-65 signature length in bytes (FIPS 204 fixed constant).
     pub const MAX_SIG_LEN: u32 = 3309;
+
+    /// Max blocks between signing a registration challenge and submitting it
+    /// on-chain. Bounds the replay window: an agent signs against a recent
+    /// block hash, and that signature is only valid for this many blocks.
+    /// ~6 minutes at 6s/block.
+    pub const REPLAY_WINDOW: u32 = 64;
 
     // -- Types ----------------------------------------------------------------
 
@@ -251,8 +258,14 @@ pub mod pallet {
         NotStarred,
         /// An agent cannot give a star to itself.
         CannotStarSelf,
-        /// Submitted public key's hash does not equal the registered DID.
-        PubkeyDidMismatch,
+        /// Submitted ML-DSA public key is not exactly MAX_PUBKEY_LEN bytes.
+        InvalidPubkeyLength,
+        /// Submitted ML-DSA signature is not exactly MAX_SIG_LEN bytes.
+        InvalidSignatureLength,
+        /// `signed_at_block` is in the future relative to the current block.
+        InvalidChallengeBlock,
+        /// Replay window expired — `signed_at_block` is too far in the past.
+        ChallengeExpired,
         /// ML-DSA signature verification failed against the registration challenge.
         InvalidQuantumProof,
     }
@@ -261,21 +274,40 @@ pub mod pallet {
 
     #[pallet::call]
     impl<T: Config> Pallet<T> {
-        /// Register a new agent DID on the ArthNeura network.
+        /// Register a new agent on the ArthNeura network, deriving its DID
+        /// from `pubkey` and verifying proof-of-key-possession via ML-DSA.
         ///
-        /// Caller becomes the controller of this identity.
-        /// Fails if `did` already exists or caller controls >= 64 agents.
+        /// `did = blake2_256("ArthNeura-DID-v1" ++ pubkey)`. The caller must
+        /// submit a valid ML-DSA signature over a chain-bound, replay-window-
+        /// bound challenge `(genesis_hash, did, controller, signed_at_block,
+        /// signed_at_hash)`, signed within [`REPLAY_WINDOW`] blocks of
+        /// `signed_at_block`. Caller becomes the controller of this identity.
+        ///
+        /// Fails if the derived DID already exists, caller controls >= 64
+        /// agents, `signed_at_block` is in the future or outside the replay
+        /// window, pubkey/signature are malformed, or ML-DSA verification
+        /// fails. On success, `is_verified` is always `true` (verification
+        /// is atomic with registration — there is no unverified state).
         /// Emits [`Event::AgentRegistered`] on success.
         #[pallet::call_index(0)]
         #[pallet::weight(T::WeightInfo::register_agent())]
         pub fn register_agent(
             origin: OriginFor<T>,
-            did: Did,
+            pubkey: BoundedVec<u8, ConstU32<MAX_PUBKEY_LEN>>,
+            signature: BoundedVec<u8, ConstU32<MAX_SIG_LEN>>,
+            signed_at_block: BlockNumberFor<T>,
             capabilities: CapabilityBitmap,
             metadata: BoundedVec<u8, ConstU32<MAX_METADATA_LEN>>,
             label: BoundedVec<u8, ConstU32<MAX_LABEL_LEN>>,
         ) -> DispatchResult {
             let controller = ensure_signed(origin)?;
+
+            // -- 1. Derive DID from pubkey (domain-separated hash) ------------
+            let did: Did = {
+                let mut preimage = b"ArthNeura-DID-v1".to_vec();
+                preimage.extend_from_slice(&pubkey);
+                sp_io::hashing::blake2_256(&preimage)
+            };
 
             ensure!(
                 !AgentProfiles::<T>::contains_key(did),
@@ -285,14 +317,50 @@ pub mod pallet {
             let agent_count = ControllerAgents::<T>::get(&controller).len();
             ensure!(agent_count < 64, Error::<T>::TooManyAgentsForController);
 
+            // -- 2. Replay-window bounds check ---------------------------------
+            let current_block = <frame_system::Pallet<T>>::block_number();
+            ensure!(
+                signed_at_block <= current_block,
+                Error::<T>::InvalidChallengeBlock
+            );
+            ensure!(
+                current_block.saturating_sub(signed_at_block)
+                    <= BlockNumberFor::<T>::from(REPLAY_WINDOW),
+                Error::<T>::ChallengeExpired
+            );
+
+            // -- 3. Build chain-bound, replay-window-bound challenge -----------
+            let genesis_hash = <frame_system::Pallet<T>>::block_hash(BlockNumberFor::<T>::zero());
+            let signed_at_hash = <frame_system::Pallet<T>>::block_hash(signed_at_block);
+            let challenge = (
+                genesis_hash,
+                did,
+                controller.clone(),
+                signed_at_block,
+                signed_at_hash,
+            )
+                .encode();
+
+            // -- 4. Parse pubkey + signature (length-checked, no panics) ------
+            let verifying_key = VerifyingKey::<MlDsa65>::new_from_slice(&pubkey)
+                .map_err(|_| Error::<T>::InvalidPubkeyLength)?;
+            let parsed_signature = Signature::<MlDsa65>::try_from(signature.as_slice())
+                .map_err(|_| Error::<T>::InvalidSignatureLength)?;
+
+            // -- 5. Verify ML-DSA signature over the challenge -----------------
+            verifying_key
+                .verify(&challenge, &parsed_signature)
+                .map_err(|_| Error::<T>::InvalidQuantumProof)?;
+
             let profile = AgentProfile::<T> {
                 did,
                 controller: controller.clone(),
                 capabilities,
                 reputation_score: 0_u32,
                 status: AgentStatus::Active,
-                registered_at: <frame_system::Pallet<T>>::block_number(),
-                is_verified: false,
+                registered_at: current_block,
+                is_verified: true,
+                quantum_scheme: QuantumScheme::MlDsa65,
                 metadata,
                 label,
             };
