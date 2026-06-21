@@ -2,17 +2,13 @@
 
 use crate::mock::*;
 use crate::pallet::{
-    AgentStatus, CapabilityBitmap, Error, Event, CAP_DATA_PROVIDER, CAP_INFERENCE_ENGINE,
-    MAX_LABEL_LEN, MAX_METADATA_LEN,
+    AgentStatus, CapabilityBitmap, Error, Event, QuantumScheme, CAP_DATA_PROVIDER,
+    CAP_INFERENCE_ENGINE, MAX_LABEL_LEN, MAX_METADATA_LEN,
 };
 use frame_support::{assert_noop, assert_ok, BoundedVec};
 use sp_runtime::DispatchError;
 
 // -- Helpers ------------------------------------------------------------------
-
-fn did(seed: u8) -> [u8; 32] {
-    [seed; 32]
-}
 
 fn metadata() -> BoundedVec<u8, frame_support::traits::ConstU32<MAX_METADATA_LEN>> {
     BoundedVec::default()
@@ -28,12 +24,16 @@ fn label() -> BoundedVec<u8, frame_support::traits::ConstU32<MAX_LABEL_LEN>> {
 fn register_agent_works() {
     new_test_ext().execute_with(|| {
         let controller = 1u64;
-        let did = did(1);
         let caps = CAP_DATA_PROVIDER | CAP_INFERENCE_ENGINE;
+        let signed_at_block = System::block_number();
+        let (pubkey, signature) = valid_register_params(1, controller, signed_at_block);
+        let did = derive_did(&pubkey);
 
         assert_ok!(AgentRegistry::register_agent(
             RuntimeOrigin::signed(controller),
-            did,
+            pubkey,
+            signature,
+            signed_at_block,
             caps,
             metadata(),
             label(),
@@ -45,6 +45,8 @@ fn register_agent_works() {
         assert_eq!(profile.capabilities, caps);
         assert_eq!(profile.reputation_score, 0);
         assert_eq!(profile.status, AgentStatus::Active);
+        assert!(profile.is_verified);
+        assert_eq!(profile.quantum_scheme, QuantumScheme::MlDsa65);
 
         // Reverse index updated
         let dids = AgentRegistry::controller_agents(controller);
@@ -63,20 +65,44 @@ fn register_agent_works() {
 fn register_agent_duplicate_did_fails() {
     new_test_ext().execute_with(|| {
         let controller = 1u64;
-        let did = did(1);
+        let signed_at_block = System::block_number();
+        let (pubkey, signature) = valid_register_params(1, controller, signed_at_block);
 
         assert_ok!(AgentRegistry::register_agent(
             RuntimeOrigin::signed(controller),
-            did,
+            pubkey.clone(),
+            signature,
+            signed_at_block,
             CAP_DATA_PROVIDER,
             metadata(),
             label(),
         ));
 
+        // Re-using the SAME pubkey (and therefore the same derived DID)
+        // must fail, even with a freshly-built, otherwise-valid signature
+        // over a new challenge for the same (pubkey, controller, block).
+        let (_pubkey2, signature2) = {
+            let did = derive_did(&pubkey);
+            let genesis_hash = System::block_hash(0u64);
+            let signed_at_hash = System::block_hash(signed_at_block);
+            let challenge = build_challenge(
+                genesis_hash,
+                did,
+                controller,
+                signed_at_block,
+                signed_at_hash,
+            );
+            let keypair = generate_keypair(1);
+            let sig = sign_challenge(&keypair.signing_key, &challenge);
+            (pubkey.clone(), sig)
+        };
+
         assert_noop!(
             AgentRegistry::register_agent(
                 RuntimeOrigin::signed(controller),
-                did,
+                pubkey,
+                signature2,
+                signed_at_block,
                 CAP_DATA_PROVIDER,
                 metadata(),
                 label(),
@@ -89,10 +115,16 @@ fn register_agent_duplicate_did_fails() {
 #[test]
 fn register_agent_unsigned_fails() {
     new_test_ext().execute_with(|| {
+        let controller = 1u64;
+        let signed_at_block = System::block_number();
+        let (pubkey, signature) = valid_register_params(1, controller, signed_at_block);
+
         assert_noop!(
             AgentRegistry::register_agent(
                 RuntimeOrigin::none(),
-                did(1),
+                pubkey,
+                signature,
+                signed_at_block,
                 CAP_DATA_PROVIDER,
                 metadata(),
                 label(),
@@ -106,12 +138,17 @@ fn register_agent_unsigned_fails() {
 fn register_agent_too_many_agents_fails() {
     new_test_ext().execute_with(|| {
         let controller = 1u64;
+        let signed_at_block = System::block_number();
 
-        // Register 64 agents
-        for i in 0..64u8 {
+        // Register 64 agents, each with a distinct keypair (distinct seed),
+        // so each gets a distinct DID under the same controller.
+        for i in 0..64u64 {
+            let (pubkey, signature) = valid_register_params(i, controller, signed_at_block);
             assert_ok!(AgentRegistry::register_agent(
                 RuntimeOrigin::signed(controller),
-                did(i),
+                pubkey,
+                signature,
+                signed_at_block,
                 CAP_DATA_PROVIDER,
                 metadata(),
                 label(),
@@ -119,10 +156,13 @@ fn register_agent_too_many_agents_fails() {
         }
 
         // 65th must fail
+        let (pubkey, signature) = valid_register_params(64, controller, signed_at_block);
         assert_noop!(
             AgentRegistry::register_agent(
                 RuntimeOrigin::signed(controller),
-                did(64),
+                pubkey,
+                signature,
+                signed_at_block,
                 CAP_DATA_PROVIDER,
                 metadata(),
                 label(),
@@ -138,11 +178,15 @@ fn register_agent_too_many_agents_fails() {
 fn update_profile_works() {
     new_test_ext().execute_with(|| {
         let controller = 1u64;
-        let did = did(1);
+        let signed_at_block = System::block_number();
+        let (pubkey, signature) = valid_register_params(1, controller, signed_at_block);
+        let did = derive_did(&pubkey);
 
         assert_ok!(AgentRegistry::register_agent(
             RuntimeOrigin::signed(controller),
-            did,
+            pubkey,
+            signature,
+            signed_at_block,
             CAP_DATA_PROVIDER,
             metadata(),
             label(),
@@ -170,11 +214,15 @@ fn update_profile_not_controller_fails() {
     new_test_ext().execute_with(|| {
         let controller = 1u64;
         let attacker = 2u64;
-        let did = did(1);
+        let signed_at_block = System::block_number();
+        let (pubkey, signature) = valid_register_params(1, controller, signed_at_block);
+        let did = derive_did(&pubkey);
 
         assert_ok!(AgentRegistry::register_agent(
             RuntimeOrigin::signed(controller),
-            did,
+            pubkey,
+            signature,
+            signed_at_block,
             CAP_DATA_PROVIDER,
             metadata(),
             label(),
@@ -196,10 +244,14 @@ fn update_profile_not_controller_fails() {
 #[test]
 fn update_profile_did_not_found_fails() {
     new_test_ext().execute_with(|| {
+        // A DID that was never registered — derive it from a keypair that
+        // was never used in any register_agent call in this test.
+        let never_registered_did = derive_did(&pubkey_bytes(&generate_keypair(999).verifying_key));
+
         assert_noop!(
             AgentRegistry::update_profile(
                 RuntimeOrigin::signed(1u64),
-                did(99),
+                never_registered_did,
                 CAP_DATA_PROVIDER,
                 metadata(),
                 label(),
@@ -213,11 +265,15 @@ fn update_profile_did_not_found_fails() {
 fn update_profile_revoked_agent_fails() {
     new_test_ext().execute_with(|| {
         let controller = 1u64;
-        let did = did(1);
+        let signed_at_block = System::block_number();
+        let (pubkey, signature) = valid_register_params(1, controller, signed_at_block);
+        let did = derive_did(&pubkey);
 
         assert_ok!(AgentRegistry::register_agent(
             RuntimeOrigin::signed(controller),
-            did,
+            pubkey,
+            signature,
+            signed_at_block,
             CAP_DATA_PROVIDER,
             metadata(),
             label(),
@@ -248,11 +304,15 @@ fn update_profile_revoked_agent_fails() {
 fn set_agent_status_suspend_works() {
     new_test_ext().execute_with(|| {
         let controller = 1u64;
-        let did = did(1);
+        let signed_at_block = System::block_number();
+        let (pubkey, signature) = valid_register_params(1, controller, signed_at_block);
+        let did = derive_did(&pubkey);
 
         assert_ok!(AgentRegistry::register_agent(
             RuntimeOrigin::signed(controller),
-            did,
+            pubkey,
+            signature,
+            signed_at_block,
             CAP_DATA_PROVIDER,
             metadata(),
             label(),
@@ -284,11 +344,15 @@ fn set_agent_status_suspend_works() {
 fn set_agent_status_revoke_decrements_counter() {
     new_test_ext().execute_with(|| {
         let controller = 1u64;
-        let did = did(1);
+        let signed_at_block = System::block_number();
+        let (pubkey, signature) = valid_register_params(1, controller, signed_at_block);
+        let did = derive_did(&pubkey);
 
         assert_ok!(AgentRegistry::register_agent(
             RuntimeOrigin::signed(controller),
-            did,
+            pubkey,
+            signature,
+            signed_at_block,
             CAP_DATA_PROVIDER,
             metadata(),
             label(),
@@ -311,11 +375,15 @@ fn set_agent_status_revoke_decrements_counter() {
 fn set_agent_status_revoked_terminal_fails() {
     new_test_ext().execute_with(|| {
         let controller = 1u64;
-        let did = did(1);
+        let signed_at_block = System::block_number();
+        let (pubkey, signature) = valid_register_params(1, controller, signed_at_block);
+        let did = derive_did(&pubkey);
 
         assert_ok!(AgentRegistry::register_agent(
             RuntimeOrigin::signed(controller),
-            did,
+            pubkey,
+            signature,
+            signed_at_block,
             CAP_DATA_PROVIDER,
             metadata(),
             label(),
@@ -344,11 +412,15 @@ fn set_agent_status_not_controller_fails() {
     new_test_ext().execute_with(|| {
         let controller = 1u64;
         let attacker = 2u64;
-        let did = did(1);
+        let signed_at_block = System::block_number();
+        let (pubkey, signature) = valid_register_params(1, controller, signed_at_block);
+        let did = derive_did(&pubkey);
 
         assert_ok!(AgentRegistry::register_agent(
             RuntimeOrigin::signed(controller),
-            did,
+            pubkey,
+            signature,
+            signed_at_block,
             CAP_DATA_PROVIDER,
             metadata(),
             label(),
@@ -372,19 +444,26 @@ fn give_star_works() {
     new_test_ext().execute_with(|| {
         let alice = 1u64;
         let bob = 2u64;
-        let alice_did = did(1);
-        let bob_did = did(2);
+        let signed_at_block = System::block_number();
+        let (alice_pubkey, alice_sig) = valid_register_params(1, alice, signed_at_block);
+        let (bob_pubkey, bob_sig) = valid_register_params(2, bob, signed_at_block);
+        let alice_did = derive_did(&alice_pubkey);
+        let bob_did = derive_did(&bob_pubkey);
 
         assert_ok!(AgentRegistry::register_agent(
             RuntimeOrigin::signed(alice),
-            alice_did,
+            alice_pubkey,
+            alice_sig,
+            signed_at_block,
             CAP_DATA_PROVIDER,
             metadata(),
             label(),
         ));
         assert_ok!(AgentRegistry::register_agent(
             RuntimeOrigin::signed(bob),
-            bob_did,
+            bob_pubkey,
+            bob_sig,
+            signed_at_block,
             CAP_DATA_PROVIDER,
             metadata(),
             label(),
@@ -412,11 +491,15 @@ fn give_star_works() {
 fn give_star_cannot_star_self() {
     new_test_ext().execute_with(|| {
         let alice = 1u64;
-        let alice_did = did(1);
+        let signed_at_block = System::block_number();
+        let (alice_pubkey, alice_sig) = valid_register_params(1, alice, signed_at_block);
+        let alice_did = derive_did(&alice_pubkey);
 
         assert_ok!(AgentRegistry::register_agent(
             RuntimeOrigin::signed(alice),
-            alice_did,
+            alice_pubkey,
+            alice_sig,
+            signed_at_block,
             CAP_DATA_PROVIDER,
             metadata(),
             label(),
@@ -434,19 +517,25 @@ fn give_star_cooldown_enforced() {
     new_test_ext().execute_with(|| {
         let alice = 1u64;
         let bob = 2u64;
-        let alice_did = did(1);
-        let bob_did = did(2);
+        let signed_at_block = System::block_number();
+        let (alice_pubkey, alice_sig) = valid_register_params(1, alice, signed_at_block);
+        let (bob_pubkey, bob_sig) = valid_register_params(2, bob, signed_at_block);
+        let bob_did = derive_did(&bob_pubkey);
 
         assert_ok!(AgentRegistry::register_agent(
             RuntimeOrigin::signed(alice),
-            alice_did,
+            alice_pubkey,
+            alice_sig,
+            signed_at_block,
             CAP_DATA_PROVIDER,
             metadata(),
             label(),
         ));
         assert_ok!(AgentRegistry::register_agent(
             RuntimeOrigin::signed(bob),
-            bob_did,
+            bob_pubkey,
+            bob_sig,
+            signed_at_block,
             CAP_DATA_PROVIDER,
             metadata(),
             label(),
@@ -471,19 +560,25 @@ fn give_star_after_cooldown_works() {
     new_test_ext().execute_with(|| {
         let alice = 1u64;
         let bob = 2u64;
-        let alice_did = did(1);
-        let bob_did = did(2);
+        let signed_at_block = System::block_number();
+        let (alice_pubkey, alice_sig) = valid_register_params(1, alice, signed_at_block);
+        let (bob_pubkey, bob_sig) = valid_register_params(2, bob, signed_at_block);
+        let bob_did = derive_did(&bob_pubkey);
 
         assert_ok!(AgentRegistry::register_agent(
             RuntimeOrigin::signed(alice),
-            alice_did,
+            alice_pubkey,
+            alice_sig,
+            signed_at_block,
             CAP_DATA_PROVIDER,
             metadata(),
             label(),
         ));
         assert_ok!(AgentRegistry::register_agent(
             RuntimeOrigin::signed(bob),
-            bob_did,
+            bob_pubkey,
+            bob_sig,
+            signed_at_block,
             CAP_DATA_PROVIDER,
             metadata(),
             label(),
@@ -514,19 +609,26 @@ fn remove_star_works() {
     new_test_ext().execute_with(|| {
         let alice = 1u64;
         let bob = 2u64;
-        let alice_did = did(1);
-        let bob_did = did(2);
+        let signed_at_block = System::block_number();
+        let (alice_pubkey, alice_sig) = valid_register_params(1, alice, signed_at_block);
+        let (bob_pubkey, bob_sig) = valid_register_params(2, bob, signed_at_block);
+        let alice_did = derive_did(&alice_pubkey);
+        let bob_did = derive_did(&bob_pubkey);
 
         assert_ok!(AgentRegistry::register_agent(
             RuntimeOrigin::signed(alice),
-            alice_did,
+            alice_pubkey,
+            alice_sig,
+            signed_at_block,
             CAP_DATA_PROVIDER,
             metadata(),
             label(),
         ));
         assert_ok!(AgentRegistry::register_agent(
             RuntimeOrigin::signed(bob),
-            bob_did,
+            bob_pubkey,
+            bob_sig,
+            signed_at_block,
             CAP_DATA_PROVIDER,
             metadata(),
             label(),
@@ -569,19 +671,25 @@ fn remove_star_not_starred_fails() {
     new_test_ext().execute_with(|| {
         let alice = 1u64;
         let bob = 2u64;
-        let alice_did = did(1);
-        let bob_did = did(2);
+        let signed_at_block = System::block_number();
+        let (alice_pubkey, alice_sig) = valid_register_params(1, alice, signed_at_block);
+        let (bob_pubkey, bob_sig) = valid_register_params(2, bob, signed_at_block);
+        let bob_did = derive_did(&bob_pubkey);
 
         assert_ok!(AgentRegistry::register_agent(
             RuntimeOrigin::signed(alice),
-            alice_did,
+            alice_pubkey,
+            alice_sig,
+            signed_at_block,
             CAP_DATA_PROVIDER,
             metadata(),
             label(),
         ));
         assert_ok!(AgentRegistry::register_agent(
             RuntimeOrigin::signed(bob),
-            bob_did,
+            bob_pubkey,
+            bob_sig,
+            signed_at_block,
             CAP_DATA_PROVIDER,
             metadata(),
             label(),
@@ -599,19 +707,25 @@ fn remove_star_resets_cooldown() {
     new_test_ext().execute_with(|| {
         let alice = 1u64;
         let bob = 2u64;
-        let alice_did = did(1);
-        let bob_did = did(2);
+        let signed_at_block = System::block_number();
+        let (alice_pubkey, alice_sig) = valid_register_params(1, alice, signed_at_block);
+        let (bob_pubkey, bob_sig) = valid_register_params(2, bob, signed_at_block);
+        let bob_did = derive_did(&bob_pubkey);
 
         assert_ok!(AgentRegistry::register_agent(
             RuntimeOrigin::signed(alice),
-            alice_did,
+            alice_pubkey,
+            alice_sig,
+            signed_at_block,
             CAP_DATA_PROVIDER,
             metadata(),
             label(),
         ));
         assert_ok!(AgentRegistry::register_agent(
             RuntimeOrigin::signed(bob),
-            bob_did,
+            bob_pubkey,
+            bob_sig,
+            signed_at_block,
             CAP_DATA_PROVIDER,
             metadata(),
             label(),
