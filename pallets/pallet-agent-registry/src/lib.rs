@@ -151,7 +151,12 @@ pub mod pallet {
         pub status: AgentStatus,
         /// Block number when this profile was registered.
         pub registered_at: BlockNumberFor<T>,
-        /// False until ML-DSA proof verified via [`Call::register_agent`].
+        /// Always `true` for any profile that exists in storage. ML-DSA
+        /// verification happens atomically inside [`Call::register_agent`] —
+        /// a failed proof reverts the whole call, so an unverified profile
+        /// is never inserted. Kept as an explicit field (rather than
+        /// implied by existence) for off-chain indexer/UI convenience and
+        /// forward-compatibility with any future non-atomic verification path.
         pub is_verified: bool,
         /// Post-quantum scheme used for this agent's identity proof.
         pub quantum_scheme: QuantumScheme,
@@ -561,26 +566,51 @@ pub trait WeightInfo {
 pub struct SubstrateWeight<T>(core::marker::PhantomData<T>);
 
 impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
+    /// 6 reads: AgentProfiles::contains_key, ControllerAgents::get,
+    /// 2x frame_system::block_hash (genesis + signed_at), plus the
+    /// internal get() inside ControllerAgents::try_mutate and
+    /// ActiveAgentCount::mutate (both are get-then-put under the hood —
+    /// confirmed against frame-support's StorageMap/StorageValue source).
+    /// 3 writes: AgentProfiles::insert, ControllerAgents::try_mutate,
+    /// ActiveAgentCount::mutate.
+    /// Plus 300_000_000 (0.3ms) for ML-DSA-65 signature verification.
+    /// This figure is derived from a real x86_64 benchmark of ML-DSA-65
+    /// verify (~0.087ms, wolfSSL/liboqs), scaled up ~3.4x as a safety
+    /// margin for the unaudited, non-assembly-optimized RustCrypto
+    /// `ml-dsa` crate this pallet uses. It is a placeholder pending real
+    /// frame-benchmarking before mainnet — under-pricing this is a DoS
+    /// vector, so the margin errs toward overestimating, not underestimating.
     fn register_agent() -> Weight {
         Weight::from_parts(10_000, 0)
-            .saturating_add(Weight::from_parts(25_000_000 * 3, 0))
+            .saturating_add(Weight::from_parts(25_000_000 * 6, 0))
             .saturating_add(Weight::from_parts(100_000_000 * 3, 0))
+            .saturating_add(Weight::from_parts(300_000_000, 0))
     }
+    /// 1 read: AgentProfiles::get. 1 write: AgentProfiles::insert.
     fn update_profile() -> Weight {
         Weight::from_parts(8_000, 0)
             .saturating_add(Weight::from_parts(25_000_000, 0))
             .saturating_add(Weight::from_parts(100_000_000, 0))
     }
+    /// 2 reads, 2 writes: AgentProfiles::get + insert, plus the
+    /// worst-case Revoked path's ActiveAgentCount::mutate (get + put).
     fn set_agent_status() -> Weight {
         Weight::from_parts(6_000, 0)
             .saturating_add(Weight::from_parts(25_000_000 * 2, 0))
             .saturating_add(Weight::from_parts(100_000_000 * 2, 0))
     }
+    /// 4 reads: ControllerAgents::get, AgentProfiles::get (receiver),
+    /// StarGivers::get, plus the internal get() inside
+    /// AgentProfiles::try_mutate. 2 writes: StarGivers::insert,
+    /// AgentProfiles::try_mutate.
     fn give_star() -> Weight {
         Weight::from_parts(8_000, 0)
             .saturating_add(Weight::from_parts(25_000_000 * 4, 0))
             .saturating_add(Weight::from_parts(100_000_000 * 2, 0))
     }
+    /// 3 reads: ControllerAgents::get, StarGivers::get, plus the
+    /// internal get() inside AgentProfiles::try_mutate. 2 writes:
+    /// StarGivers::insert, AgentProfiles::try_mutate.
     fn remove_star() -> Weight {
         Weight::from_parts(8_000, 0)
             .saturating_add(Weight::from_parts(25_000_000 * 3, 0))
@@ -589,19 +619,30 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 }
 
 impl WeightInfo for () {
+    // Dev/test placeholder. Each value below is the EXACT total of the
+    // corresponding SubstrateWeight<T> impl (see there for the audited
+    // read/write/compute breakdown) — kept identical on purpose, so
+    // dev/test environments see the same cost profile as production
+    // and don't mask under/over-weighting bugs during testing.
+
+    /// = 10_000 + (25_000_000 * 6) + (100_000_000 * 3) + 300_000_000
     fn register_agent() -> Weight {
-        Weight::from_parts(10_000, 0)
+        Weight::from_parts(750_010_000, 0)
     }
+    /// = 8_000 + 25_000_000 + 100_000_000
     fn update_profile() -> Weight {
-        Weight::from_parts(8_000, 0)
+        Weight::from_parts(125_008_000, 0)
     }
+    /// = 6_000 + (25_000_000 * 2) + (100_000_000 * 2)
     fn set_agent_status() -> Weight {
-        Weight::from_parts(6_000, 0)
+        Weight::from_parts(250_006_000, 0)
     }
+    /// = 8_000 + (25_000_000 * 4) + (100_000_000 * 2)
     fn give_star() -> Weight {
-        Weight::from_parts(8_000, 0)
+        Weight::from_parts(300_008_000, 0)
     }
+    /// = 8_000 + (25_000_000 * 3) + (100_000_000 * 2)
     fn remove_star() -> Weight {
-        Weight::from_parts(8_000, 0)
+        Weight::from_parts(275_008_000, 0)
     }
 }
