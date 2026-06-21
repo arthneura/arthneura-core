@@ -128,3 +128,57 @@ pub fn sign_challenge(
     let encoded: EncodedSignature<MlDsa65> = signature.encode();
     BoundedVec::try_from(encoded.to_vec()).expect("ML-DSA-65 signature is exactly MAX_SIG_LEN")
 }
+
+/// Derive a DID exactly the way `register_agent` does:
+/// `blake2_256("ArthNeura-DID-v1" ++ pubkey)`. Exposed standalone so
+/// tests can predict a DID *before* calling register_agent — e.g. to
+/// assert on it, or to construct a deliberately-mismatched challenge
+/// for adversarial tests. If the pallet's derivation ever changes, this
+/// must change too, or signature checks will start failing for the
+/// right reason (drift caught immediately) rather than the wrong one.
+pub fn derive_did(pubkey: &[u8]) -> Did {
+    let mut preimage = b"ArthNeura-DID-v1".to_vec();
+    preimage.extend_from_slice(pubkey);
+    sp_io::hashing::blake2_256(&preimage)
+}
+
+/// One-call helper: generates a keypair from `seed`, derives its DID,
+/// builds the exact on-chain challenge for `controller` and
+/// `signed_at_block`, and signs it. Returns `(pubkey, signature)` ready
+/// to pass straight into `register_agent`.
+///
+/// MUST be called from inside `execute_with(|| { ... })` — it reads
+/// on-chain block hashes via `System::block_hash`, which only exist
+/// inside a runtime/storage context.
+///
+/// `signed_at_block` is a parameter, not hardcoded to the current
+/// block, specifically so adversarial tests can pass an expired,
+/// future, or otherwise out-of-window block number while still reusing
+/// every other piece of this helper (keypair generation, pubkey
+/// encoding, challenge construction, signing) unchanged.
+pub fn valid_register_params(
+    seed: u64,
+    controller: u64,
+    signed_at_block: u64,
+) -> (
+    BoundedVec<u8, ConstU32<MAX_PUBKEY_LEN>>,
+    BoundedVec<u8, ConstU32<MAX_SIG_LEN>>,
+) {
+    let keypair = generate_keypair(seed);
+    let pubkey = pubkey_bytes(&keypair.verifying_key);
+    let did = derive_did(&pubkey);
+
+    let genesis_hash = System::block_hash(0u64);
+    let signed_at_hash = System::block_hash(signed_at_block);
+
+    let challenge = build_challenge(
+        genesis_hash,
+        did,
+        controller,
+        signed_at_block,
+        signed_at_hash,
+    );
+    let signature = sign_challenge(&keypair.signing_key, &challenge);
+
+    (pubkey, signature)
+}
