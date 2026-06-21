@@ -20,6 +20,7 @@ ml-dsa = { version = "0.1.1", default-features = false }
 sp-io = { workspace = true, default-features = false }
 
 [dev-dependencies]
+ml-dsa = { version = "0.1.1", default-features = false }
 sp-core = { workspace = true }
 
 [features]
