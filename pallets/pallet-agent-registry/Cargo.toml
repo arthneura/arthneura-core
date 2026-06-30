@@ -22,6 +22,7 @@ sp-io = { workspace = true, default-features = false }
 [dev-dependencies]
 ml-dsa = { version = "0.1.1", default-features = false }
 sp-core = { workspace = true }
+pallet-balances = { workspace = true, default-features = false }
 
 [features]
 default = ["std"]
@@ -33,6 +34,7 @@ std = [
     "sp-runtime/std",
     "sp-io/std",
     "frame-benchmarking?/std",
+    "pallet-balances/std",
 ]
 runtime-benchmarks = [
     "frame-benchmarking/runtime-benchmarks",

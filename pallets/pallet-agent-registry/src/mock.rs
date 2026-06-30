@@ -12,26 +12,47 @@ type Block = frame_system::mocking::MockBlock<Runtime>;
 frame_support::construct_runtime!(
     pub enum Runtime {
         System: frame_system,
+        Balances: pallet_balances,
         AgentRegistry: pallet_agent_registry,
     }
 );
 
 #[derive_impl(frame_system::config_preludes::TestDefaultConfig)]
 impl frame_system::Config for Runtime {
+    type AccountData = pallet_balances::AccountData<u64>;
     type Block = Block;
+}
+
+#[derive_impl(pallet_balances::config_preludes::TestDefaultConfig)]
+impl pallet_balances::Config for Runtime {
+    type AccountStore = System;
 }
 
 impl pallet_agent_registry::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     type WeightInfo = ();
     type StarCooldown = frame_support::traits::ConstU64<10>;
+    type Currency = Balances;
+    type RegistrationDeposit = frame_support::traits::ConstU64<100>;
 }
 
 pub fn new_test_ext() -> sp_io::TestExternalities {
-    let mut ext: sp_io::TestExternalities = frame_system::GenesisConfig::<Runtime>::default()
+    let mut storage = frame_system::GenesisConfig::<Runtime>::default()
         .build_storage()
-        .unwrap()
-        .into();
+        .unwrap();
+
+    // Endow every account id used across this pallet's test suite with
+    // a balance well above any RegistrationDeposit total a single test
+    // can reserve (the largest case, register_agent_too_many_agents_fails,
+    // reserves 64 x RegistrationDeposit from one controller).
+    pallet_balances::GenesisConfig::<Runtime> {
+        balances: (1u64..=20u64).map(|acc| (acc, 1_000_000u64)).collect(),
+        ..Default::default()
+    }
+    .assimilate_storage(&mut storage)
+    .unwrap();
+
+    let mut ext: sp_io::TestExternalities = storage.into();
     ext.execute_with(|| System::set_block_number(1));
     ext
 }

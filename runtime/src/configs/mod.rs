@@ -42,7 +42,7 @@ use sp_version::RuntimeVersion;
 use super::{
     AccountId, Aura, Balance, Balances, Block, BlockNumber, Hash, Nonce, PalletInfo, Runtime,
     RuntimeCall, RuntimeEvent, RuntimeFreezeReason, RuntimeHoldReason, RuntimeOrigin, RuntimeTask,
-    System, EXISTENTIAL_DEPOSIT, SLOT_DURATION, VERSION,
+    System, EXISTENTIAL_DEPOSIT, SLOT_DURATION, UNIT, VERSION,
 };
 
 const NORMAL_DISPATCH_RATIO: Perbill = Perbill::from_percent(75);
@@ -169,4 +169,7 @@ impl pallet_agent_registry::Config for Runtime {
     type WeightInfo = ();
     /// 1200 blocks ≈ 2 hours at 6 s/block.
     type StarCooldown = ConstU32<1200>;
+    type Currency = Balances;
+    /// 100 ART (12 decimals).
+    type RegistrationDeposit = ConstU128<{ 100 * UNIT }>;
 }

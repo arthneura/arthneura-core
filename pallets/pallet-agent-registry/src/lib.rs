@@ -26,6 +26,7 @@ mod tests;
 pub mod pallet {
     use crate::WeightInfo;
     use frame_support::{pallet_prelude::*, sp_runtime::Saturating};
+    use frame_support::traits::{Currency, ReservableCurrency};
     use frame_system::pallet_prelude::*;
     use ml_dsa::{KeyInit, MlDsa65, Signature, Verifier, VerifyingKey};
 
@@ -178,7 +179,19 @@ pub mod pallet {
         /// Production: 1200 blocks (~2 hours at 6s/block). Tests: 10 blocks.
         #[pallet::constant]
         type StarCooldown: Get<BlockNumberFor<Self>>;
+        /// Currency used for the anti-spam registration deposit.
+        /// Reserved (not burned) in `register_agent`; unreserved on
+        /// off-boarding by a future `deregister_agent` extrinsic.
+        type Currency: ReservableCurrency<Self::AccountId>;
+        /// Amount reserved per registered agent. Makes mass-registering
+        /// throwaway DIDs economically costly. Production: 100 ART.
+        #[pallet::constant]
+        type RegistrationDeposit: Get<BalanceOf<Self>>;
     }
+
+    /// Balance type for [`Config::Currency`].
+    pub type BalanceOf<T> =
+        <<T as Config>::Currency as Currency<<T as frame_system::Config>::AccountId>>::Balance;
 
     // -- Pallet ---------------------------------------------------------------
 
@@ -273,6 +286,8 @@ pub mod pallet {
         ChallengeExpired,
         /// ML-DSA signature verification failed against the registration challenge.
         InvalidQuantumProof,
+        /// Caller's free balance is too low to cover the registration deposit.
+        InsufficientBalanceForDeposit,
     }
 
     // -- Calls ----------------------------------------------------------------
@@ -323,6 +338,19 @@ pub mod pallet {
             ensure!(agent_count < 64, Error::<T>::TooManyAgentsForController);
 
             // -- 2. Replay-window bounds check ---------------------------------
+            // NOTE: `signed_at_block == current_block` is intentionally allowed
+            // (`<=`, not `<`). `block_hash(current_block)` is not yet populated
+            // mid-block — frame_system writes it at the *start* of the next
+            // block — so for same-block submissions `signed_at_hash` below
+            // resolves to a default/zero value identically on the signer's and
+            // verifier's side. The challenge stays unique per (genesis_hash,
+            // did, controller, signed_at_block) regardless, so this does not
+            // open a forgery or replay path — it only means same-block
+            // submissions get one fewer bit of binding from `signed_at_hash`.
+            // Same-block registration is the common case for low-latency agent
+            // onboarding (and is what this pallet's test suite exercises
+            // throughout), so this is a deliberate, non-exploitable tradeoff —
+            // not a bug to be tightened.
             let current_block = <frame_system::Pallet<T>>::block_number();
             ensure!(
                 signed_at_block <= current_block,
@@ -356,6 +384,16 @@ pub mod pallet {
             verifying_key
                 .verify(&challenge, &parsed_signature)
                 .map_err(|_| Error::<T>::InvalidQuantumProof)?;
+
+            // -- 6. Reserve the anti-spam registration deposit -----------------
+            // Deliberately placed after every other fallible check, not before.
+            // Reserving earlier would mutate Balances storage on failure paths
+            // that currently mutate nothing (duplicate DID, too-many-agents,
+            // expired challenge, malformed keys, bad signature), which would
+            // break assert_noop!'s no-side-effect-on-error assertion for those
+            // cases. This is the last fallible step before commit.
+            T::Currency::reserve(&controller, T::RegistrationDeposit::get())
+                .map_err(|_| Error::<T>::InsufficientBalanceForDeposit)?;
 
             let profile = AgentProfile::<T> {
                 did,

@@ -5929,6 +5929,7 @@ dependencies = [
  "frame-support",
  "frame-system",
  "ml-dsa",
+ "pallet-balances",
  "parity-scale-codec",
  "scale-info",
  "sp-core",
