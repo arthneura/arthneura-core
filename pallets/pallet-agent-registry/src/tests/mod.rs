@@ -2,7 +2,7 @@
 
 use crate::mock::*;
 use crate::pallet::{
-    AgentStatus, CapabilityBitmap, Error, Event, QuantumScheme, CAP_DATA_PROVIDER,
+    AgentStatus, CapabilityBitmap, Did, Error, Event, QuantumScheme, CAP_DATA_PROVIDER,
     CAP_INFERENCE_ENGINE, MAX_LABEL_LEN, MAX_METADATA_LEN,
 };
 use frame_support::{assert_noop, assert_ok, BoundedVec};

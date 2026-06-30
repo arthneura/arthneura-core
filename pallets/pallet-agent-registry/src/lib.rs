@@ -453,20 +453,23 @@ pub mod pallet {
 
         /// Give a reputation star to another agent.
         ///
-        /// Caller must control a registered, non-revoked agent DID.
+        /// `giver_did` must be a DID registered to and controlled by the
+        /// caller's account — verified via `ControllerAgents` reverse-index
+        /// membership. This lets a controller with multiple agents act as
+        /// any one of them, rather than being forced onto a fixed DID.
         /// Self-starring is rejected. Repeated stars are rate-limited by
         /// [`Config::StarCooldown`] blocks. On success, receiver's
         /// `reputation_score` increments by 1.
         /// Emits [`Event::StarGiven`] on success.
         #[pallet::call_index(3)]
-        #[pallet::weight(T::WeightInfo::give_star())]
-        pub fn give_star(origin: OriginFor<T>, receiver: Did) -> DispatchResult {
+        #[pallet::weight(T::WeightInfo::give_star(*giver_did, *receiver))]
+        pub fn give_star(origin: OriginFor<T>, giver_did: Did, receiver: Did) -> DispatchResult {
             // -- 1. Authenticate caller ---------------------------------------
             let giver = ensure_signed(origin)?;
 
-            // -- 2. O(1) giver DID lookup via reverse index -------------------
+            // -- 2. Verify caller controls the claimed giver_did --------------
             let giver_dids = ControllerAgents::<T>::get(&giver);
-            let giver_did = giver_dids.first().copied().ok_or(Error::<T>::DidNotFound)?;
+            ensure!(giver_dids.contains(&giver_did), Error::<T>::NotController);
 
             // -- 3. Guard: cannot star yourself -------------------------------
             ensure!(giver_did != receiver, Error::<T>::CannotStarSelf);
@@ -510,18 +513,22 @@ pub mod pallet {
 
         /// Remove a previously given star from another agent.
         ///
+        /// `giver_did` must be a DID registered to and controlled by the
+        /// caller's account — verified via `ControllerAgents` reverse-index
+        /// membership.
+        ///
         /// Resets the star ledger entry to zero (preserves cooldown history).
         /// Receiver's `reputation_score` decrements by 1 (saturating).
         /// Emits [`Event::StarRemoved`] on success.
         #[pallet::call_index(4)]
-        #[pallet::weight(T::WeightInfo::remove_star())]
-        pub fn remove_star(origin: OriginFor<T>, receiver: Did) -> DispatchResult {
+        #[pallet::weight(T::WeightInfo::remove_star(*giver_did, *receiver))]
+        pub fn remove_star(origin: OriginFor<T>, giver_did: Did, receiver: Did) -> DispatchResult {
             // -- 1. Authenticate caller ---------------------------------------
             let giver = ensure_signed(origin)?;
 
-            // -- 2. O(1) giver DID lookup via reverse index -------------------
+            // -- 2. Verify caller controls the claimed giver_did --------------
             let giver_dids = ControllerAgents::<T>::get(&giver);
-            let giver_did = giver_dids.first().copied().ok_or(Error::<T>::DidNotFound)?;
+            ensure!(giver_dids.contains(&giver_did), Error::<T>::NotController);
 
             // -- 3. Guard: star must exist (non-zero = previously starred) ----
             let last_star = StarGivers::<T>::get(giver_did, receiver);
@@ -559,8 +566,8 @@ pub trait WeightInfo {
     fn register_agent() -> Weight;
     fn update_profile() -> Weight;
     fn set_agent_status() -> Weight;
-    fn give_star() -> Weight;
-    fn remove_star() -> Weight;
+    fn give_star(giver_did: Did, receiver: Did) -> Weight;
+    fn remove_star(giver_did: Did, receiver: Did) -> Weight;
 }
 
 pub struct SubstrateWeight<T>(core::marker::PhantomData<T>);
@@ -602,8 +609,12 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
     /// 4 reads: ControllerAgents::get, AgentProfiles::get (receiver),
     /// StarGivers::get, plus the internal get() inside
     /// AgentProfiles::try_mutate. 2 writes: StarGivers::insert,
-    /// AgentProfiles::try_mutate.
-    fn give_star() -> Weight {
+    /// AgentProfiles::try_mutate. ControllerAgents::get now also backs the
+    /// ownership check (in-memory .contains(), no extra read).
+    /// Params unused in the calculation — weight here is a flat per-call
+    /// estimate, not size-dependent — but required to match the
+    /// dispatchable's signature per #[pallet::weight] convention.
+    fn give_star(_giver_did: Did, _receiver: Did) -> Weight {
         Weight::from_parts(8_000, 0)
             .saturating_add(Weight::from_parts(25_000_000 * 4, 0))
             .saturating_add(Weight::from_parts(100_000_000 * 2, 0))
@@ -611,7 +622,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
     /// 3 reads: ControllerAgents::get, StarGivers::get, plus the
     /// internal get() inside AgentProfiles::try_mutate. 2 writes:
     /// StarGivers::insert, AgentProfiles::try_mutate.
-    fn remove_star() -> Weight {
+    fn remove_star(_giver_did: Did, _receiver: Did) -> Weight {
         Weight::from_parts(8_000, 0)
             .saturating_add(Weight::from_parts(25_000_000 * 3, 0))
             .saturating_add(Weight::from_parts(100_000_000 * 2, 0))
@@ -638,11 +649,11 @@ impl WeightInfo for () {
         Weight::from_parts(250_006_000, 0)
     }
     /// = 8_000 + (25_000_000 * 4) + (100_000_000 * 2)
-    fn give_star() -> Weight {
+    fn give_star(_giver_did: Did, _receiver: Did) -> Weight {
         Weight::from_parts(300_008_000, 0)
     }
     /// = 8_000 + (25_000_000 * 3) + (100_000_000 * 2)
-    fn remove_star() -> Weight {
+    fn remove_star(_giver_did: Did, _receiver: Did) -> Weight {
         Weight::from_parts(275_008_000, 0)
     }
 }

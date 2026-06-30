@@ -32,7 +32,8 @@ fn remove_star_works() {
 
         assert_ok!(AgentRegistry::give_star(
             RuntimeOrigin::signed(alice),
-            bob_did
+            alice_did,
+            bob_did,
         ));
         assert_eq!(
             AgentRegistry::agent_profile(bob_did)
@@ -43,7 +44,8 @@ fn remove_star_works() {
 
         assert_ok!(AgentRegistry::remove_star(
             RuntimeOrigin::signed(alice),
-            bob_did
+            alice_did,
+            bob_did,
         ));
         assert_eq!(
             AgentRegistry::agent_profile(bob_did)
@@ -69,6 +71,7 @@ fn remove_star_not_starred_fails() {
         let bob = 2u64;
         let signed_at_block = System::block_number();
         let (alice_pubkey, alice_sig) = valid_register_params(1, alice, signed_at_block);
+        let alice_did = derive_did(&alice_pubkey);
         let (bob_pubkey, bob_sig) = valid_register_params(2, bob, signed_at_block);
         let bob_did = derive_did(&bob_pubkey);
 
@@ -92,7 +95,7 @@ fn remove_star_not_starred_fails() {
         ));
 
         assert_noop!(
-            AgentRegistry::remove_star(RuntimeOrigin::signed(alice), bob_did),
+            AgentRegistry::remove_star(RuntimeOrigin::signed(alice), alice_did, bob_did,),
             Error::<Runtime>::NotStarred
         );
     });
@@ -105,6 +108,7 @@ fn remove_star_resets_cooldown() {
         let bob = 2u64;
         let signed_at_block = System::block_number();
         let (alice_pubkey, alice_sig) = valid_register_params(1, alice, signed_at_block);
+        let alice_did = derive_did(&alice_pubkey);
         let (bob_pubkey, bob_sig) = valid_register_params(2, bob, signed_at_block);
         let bob_did = derive_did(&bob_pubkey);
 
@@ -129,17 +133,20 @@ fn remove_star_resets_cooldown() {
 
         assert_ok!(AgentRegistry::give_star(
             RuntimeOrigin::signed(alice),
-            bob_did
+            alice_did,
+            bob_did,
         ));
 
         assert_ok!(AgentRegistry::remove_star(
             RuntimeOrigin::signed(alice),
-            bob_did
+            alice_did,
+            bob_did,
         ));
 
         assert_ok!(AgentRegistry::give_star(
             RuntimeOrigin::signed(alice),
-            bob_did
+            alice_did,
+            bob_did,
         ));
 
         let profile = AgentRegistry::agent_profile(bob_did).unwrap();
@@ -154,6 +161,7 @@ fn remove_star_unsigned_fails() {
         let bob = 2u64;
         let signed_at_block = System::block_number();
         let (alice_pubkey, alice_sig) = valid_register_params(1, alice, signed_at_block);
+        let alice_did = derive_did(&alice_pubkey);
         let (bob_pubkey, bob_sig) = valid_register_params(2, bob, signed_at_block);
         let bob_did = derive_did(&bob_pubkey);
 
@@ -178,11 +186,12 @@ fn remove_star_unsigned_fails() {
 
         assert_ok!(AgentRegistry::give_star(
             RuntimeOrigin::signed(alice),
+            alice_did,
             bob_did,
         ));
 
         assert_noop!(
-            AgentRegistry::remove_star(RuntimeOrigin::none(), bob_did),
+            AgentRegistry::remove_star(RuntimeOrigin::none(), Did::default(), bob_did,),
             DispatchError::BadOrigin
         );
     });
@@ -207,25 +216,25 @@ fn remove_star_giver_has_no_did_fails() {
         ));
 
         // Account 99 has never registered an agent; ControllerAgents returns
-        // an empty vec, so .first() is None → DidNotFound.
+        // an empty vec, so .contains(&Did::default()) is false → NotController.
         assert_noop!(
-            AgentRegistry::remove_star(RuntimeOrigin::signed(99u64), bob_did),
-            Error::<Runtime>::DidNotFound
+            AgentRegistry::remove_star(RuntimeOrigin::signed(99u64), Did::default(), bob_did,),
+            Error::<Runtime>::NotController
         );
     });
 }
 
 #[test]
-fn remove_star_no_did_check_precedes_not_starred_check() {
+fn remove_star_not_controller_check_precedes_not_starred_check() {
     new_test_ext().execute_with(|| {
-        // Giver has no DID and has never starred the receiver. Step 2
-        // (ControllerAgents lookup) fires before step 3 (StarGivers check),
-        // so DidNotFound wins over NotStarred.
+        // Giver owns no DID and has never starred the receiver. Ownership
+        // verification (step 2) fires before the star-existence check
+        // (step 3), so NotController wins over NotStarred.
         let ghost_did = derive_did(&pubkey_bytes(&generate_keypair(999).verifying_key));
 
         assert_noop!(
-            AgentRegistry::remove_star(RuntimeOrigin::signed(99u64), ghost_did),
-            Error::<Runtime>::DidNotFound
+            AgentRegistry::remove_star(RuntimeOrigin::signed(99u64), Did::default(), ghost_did,),
+            Error::<Runtime>::NotController
         );
     });
 }
@@ -237,6 +246,7 @@ fn remove_star_double_remove_fails() {
         let bob = 2u64;
         let signed_at_block = System::block_number();
         let (alice_pubkey, alice_sig) = valid_register_params(1, alice, signed_at_block);
+        let alice_did = derive_did(&alice_pubkey);
         let (bob_pubkey, bob_sig) = valid_register_params(2, bob, signed_at_block);
         let bob_did = derive_did(&bob_pubkey);
 
@@ -261,17 +271,19 @@ fn remove_star_double_remove_fails() {
 
         assert_ok!(AgentRegistry::give_star(
             RuntimeOrigin::signed(alice),
+            alice_did,
             bob_did,
         ));
         assert_ok!(AgentRegistry::remove_star(
             RuntimeOrigin::signed(alice),
+            alice_did,
             bob_did,
         ));
 
         // Ledger entry reset to 0 (sentinel); a second remove must surface
         // NotStarred, not succeed silently.
         assert_noop!(
-            AgentRegistry::remove_star(RuntimeOrigin::signed(alice), bob_did),
+            AgentRegistry::remove_star(RuntimeOrigin::signed(alice), alice_did, bob_did,),
             Error::<Runtime>::NotStarred
         );
     });
@@ -284,6 +296,7 @@ fn remove_star_reputation_score_saturates_at_zero() {
         let bob = 2u64;
         let signed_at_block = System::block_number();
         let (alice_pubkey, alice_sig) = valid_register_params(1, alice, signed_at_block);
+        let alice_did = derive_did(&alice_pubkey);
         let (bob_pubkey, bob_sig) = valid_register_params(2, bob, signed_at_block);
         let bob_did = derive_did(&bob_pubkey);
 
@@ -308,6 +321,7 @@ fn remove_star_reputation_score_saturates_at_zero() {
 
         assert_ok!(AgentRegistry::give_star(
             RuntimeOrigin::signed(alice),
+            alice_did,
             bob_did,
         ));
 
@@ -321,6 +335,7 @@ fn remove_star_reputation_score_saturates_at_zero() {
 
         assert_ok!(AgentRegistry::remove_star(
             RuntimeOrigin::signed(alice),
+            alice_did,
             bob_did,
         ));
 
@@ -339,8 +354,10 @@ fn remove_star_registered_attacker_cannot_remove_others_star() {
         let signed_at_block = System::block_number();
 
         let (alice_pubkey, alice_sig) = valid_register_params(1, alice, signed_at_block);
+        let alice_did = derive_did(&alice_pubkey);
         let (bob_pubkey, bob_sig) = valid_register_params(2, bob, signed_at_block);
         let (eve_pubkey, eve_sig) = valid_register_params(3, eve, signed_at_block);
+        let eve_did = derive_did(&eve_pubkey);
         let bob_did = derive_did(&bob_pubkey);
 
         assert_ok!(AgentRegistry::register_agent(
@@ -375,20 +392,21 @@ fn remove_star_registered_attacker_cannot_remove_others_star() {
 
         assert_ok!(AgentRegistry::give_star(
             RuntimeOrigin::signed(alice),
+            alice_did,
             bob_did,
         ));
 
         // Eve's ledger entry for (eve_did→bob_did) is zero; she never
         // starred Bob, so the call surfaces NotStarred, not a controller error.
         assert_noop!(
-            AgentRegistry::remove_star(RuntimeOrigin::signed(eve), bob_did),
+            AgentRegistry::remove_star(RuntimeOrigin::signed(eve), eve_did, bob_did,),
             Error::<Runtime>::NotStarred
         );
     });
 }
 
 #[test]
-fn remove_star_controller_with_multiple_dids_uses_first() {
+fn remove_star_controller_must_specify_same_did_used_to_give() {
     new_test_ext().execute_with(|| {
         let alice = 1u64;
         let bob = 2u64;
@@ -432,27 +450,95 @@ fn remove_star_controller_with_multiple_dids_uses_first() {
             label(),
         ));
 
-        // Star recorded under alice_did1 (first() of ControllerAgents).
+        // Alice explicitly gives the star as her SECOND DID.
         assert_ok!(AgentRegistry::give_star(
             RuntimeOrigin::signed(alice),
+            alice_did2,
             bob_did,
         ));
 
+        // Trying to remove it while claiming to act as her FIRST DID fails:
+        // alice_did1 never starred bob_did, so the ledger lookup for that
+        // pair is zero — NotStarred, even though alice controls both DIDs.
+        assert_noop!(
+            AgentRegistry::remove_star(RuntimeOrigin::signed(alice), alice_did1, bob_did,),
+            Error::<Runtime>::NotStarred
+        );
+
+        // Removing with the SAME DID that gave the star succeeds.
         assert_ok!(AgentRegistry::remove_star(
             RuntimeOrigin::signed(alice),
+            alice_did2,
             bob_did,
         ));
 
-        // Event must name alice_did1 as giver, not alice_did2.
         System::assert_last_event(
             Event::StarRemoved {
-                giver: alice_did1,
+                giver: alice_did2,
                 receiver: bob_did,
             }
             .into(),
         );
 
-        // alice_did2 ledger entry must remain untouched (still zero).
-        assert_eq!(AgentRegistry::star_givers(alice_did2, bob_did), 0u64);
+        // alice_did1's ledger entry was never touched — still zero.
+        assert_eq!(AgentRegistry::star_givers(alice_did1, bob_did), 0u64);
+    });
+}
+
+#[test]
+fn remove_star_spoofed_giver_did_fails() {
+    new_test_ext().execute_with(|| {
+        let alice = 1u64;
+        let bob = 2u64;
+        let charlie = 3u64;
+        let signed_at_block = System::block_number();
+
+        let (alice_pubkey, alice_sig) = valid_register_params(1, alice, signed_at_block);
+        let alice_did = derive_did(&alice_pubkey);
+        let (bob_pubkey, bob_sig) = valid_register_params(2, bob, signed_at_block);
+        let bob_did = derive_did(&bob_pubkey);
+        let (charlie_pubkey, charlie_sig) = valid_register_params(3, charlie, signed_at_block);
+
+        assert_ok!(AgentRegistry::register_agent(
+            RuntimeOrigin::signed(alice),
+            alice_pubkey,
+            alice_sig,
+            signed_at_block,
+            CAP_DATA_PROVIDER,
+            metadata(),
+            label(),
+        ));
+        assert_ok!(AgentRegistry::register_agent(
+            RuntimeOrigin::signed(bob),
+            bob_pubkey,
+            bob_sig,
+            signed_at_block,
+            CAP_DATA_PROVIDER,
+            metadata(),
+            label(),
+        ));
+        assert_ok!(AgentRegistry::register_agent(
+            RuntimeOrigin::signed(charlie),
+            charlie_pubkey,
+            charlie_sig,
+            signed_at_block,
+            CAP_DATA_PROVIDER,
+            metadata(),
+            label(),
+        ));
+
+        assert_ok!(AgentRegistry::give_star(
+            RuntimeOrigin::signed(alice),
+            alice_did,
+            bob_did,
+        ));
+
+        // Charlie (signed origin) tries to remove a star while claiming to
+        // act as Alice's DID, which he does not control. Rejected even
+        // though alice_did legitimately starred bob_did.
+        assert_noop!(
+            AgentRegistry::remove_star(RuntimeOrigin::signed(charlie), alice_did, bob_did),
+            Error::<Runtime>::NotController
+        );
     });
 }
