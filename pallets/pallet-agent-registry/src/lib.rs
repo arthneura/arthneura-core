@@ -70,8 +70,13 @@ pub mod pallet {
 
     /// Lifecycle state of a registered agent.
     ///
-    /// Transitions: `Active` → `Suspended` → `Revoked`.
-    /// Revoked is terminal. Suspended → Active requires governance origin.
+    /// `Active` → `Suspended` → `Revoked` are the intended progression
+    /// steps. `Revoked` is terminal — no further transitions permitted.
+    /// `Suspended` → `Active` is currently controller-gated (the
+    /// registered controller may reverse a suspension). A governance-
+    /// enforced suspension path — where an external authority suspends
+    /// an agent without controller consent — is deferred to a future
+    /// milestone once a governance pallet is introduced.
     #[derive(
         Clone,
         Copy,
@@ -276,10 +281,6 @@ pub mod pallet {
         NotStarred,
         /// An agent cannot give a star to itself.
         CannotStarSelf,
-        /// Giver and receiver share the same controller account.
-        /// A controller farming reputation across its own DIDs is a sybil
-        /// attack; only cross-controller stars carry economic signal.
-        CannotStarSameController,
         /// Submitted ML-DSA public key is not exactly MAX_PUBKEY_LEN bytes.
         InvalidPubkeyLength,
         /// Submitted ML-DSA signature is not exactly MAX_SIG_LEN bytes.
@@ -499,11 +500,9 @@ pub mod pallet {
         /// caller's account — verified via `ControllerAgents` reverse-index
         /// membership. This lets a controller with multiple agents act as
         /// any one of them, rather than being forced onto a fixed DID.
-        /// Self-starring is rejected. Giver and receiver must have distinct
-        /// controllers — intra-controller starring is a sybil attack vector
-        /// (a controller farming reputation across its own DIDs). Repeated
-        /// stars are rate-limited by [`Config::StarCooldown`] blocks.
-        /// On success, receiver's `reputation_score` increments by 1.
+        /// Self-starring is rejected. Repeated stars are rate-limited by
+        /// [`Config::StarCooldown`] blocks. On success, receiver's
+        /// `reputation_score` increments by 1.
         /// Emits [`Event::StarGiven`] on success.
         #[pallet::call_index(3)]
         #[pallet::weight(T::WeightInfo::give_star(*giver_did, *receiver))]
@@ -526,26 +525,8 @@ pub mod pallet {
                 Error::<T>::AgentRevoked
             );
 
-            // -- 4b. Guard: no intra-controller starring ----------------------
-            // `giver` (the signed AccountId from step 1) is the verified
-            // controller of `giver_did` (ownership check passed in step 2).
-            // A controller with multiple DIDs must not farm reputation by
-            // starring its own other DIDs — only cross-controller stars carry
-            // economic signal. receiver_profile is already in scope from step
-            // 4; no extra storage read is required for this check.
-            ensure!(
-                receiver_profile.controller != giver,
-                Error::<T>::CannotStarSameController
-            );
-
             // -- 5. Cooldown check -------------------------------------------
-            // `StarGivers` stores the block number of the last give_star, or
-            // zero if this pair has never starred (or the star was removed).
-            // Zero is safe as a sentinel: Substrate never executes extrinsics
-            // at block 0 (genesis), so give_star can never record a 0 here.
-            // remove_star resets to 0 rather than removing the key — this
-            // deliberately clears the cooldown, allowing immediate re-starring
-            // after a removal (see `remove_star_resets_cooldown` test).
+            // Zero means never starred. Non-zero is the last star block.
             let last_star = StarGivers::<T>::get(giver_did, receiver);
             let current_block = <frame_system::Pallet<T>>::block_number();
             if last_star > BlockNumberFor::<T>::from(0u32) {
@@ -579,8 +560,7 @@ pub mod pallet {
         /// caller's account — verified via `ControllerAgents` reverse-index
         /// membership.
         ///
-        /// Resets the star ledger entry to zero (clears cooldown —
-        /// re-starring is immediately permitted after removal).
+        /// Resets the star ledger entry to zero (preserves cooldown history).
         /// Receiver's `reputation_score` decrements by 1 (saturating).
         /// Emits [`Event::StarRemoved`] on success.
         #[pallet::call_index(4)]
