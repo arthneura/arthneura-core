@@ -41,7 +41,7 @@ fn testnet_genesis(
         aura: pallet_aura::GenesisConfig {
             authorities: initial_authorities
                 .iter()
-                .map(|x| (x.0.clone()))
+                .map(|x| x.0.clone())
                 .collect::<Vec<_>>(),
         },
         grandpa: pallet_grandpa::GenesisConfig {
