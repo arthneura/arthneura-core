@@ -266,6 +266,8 @@ pub mod pallet {
         StarGiven { giver: Did, receiver: Did },
         /// A star was removed from an agent.
         StarRemoved { giver: Did, receiver: Did },
+        /// Agent voluntarily deregistered; deposit returned to controller.
+        AgentDeregistered { did: Did, controller: T::AccountId },
     }
 
     // -- Errors ---------------------------------------------------------------
@@ -300,6 +302,9 @@ pub mod pallet {
         InvalidQuantumProof,
         /// Caller's free balance is too low to cover the registration deposit.
         InsufficientBalanceForDeposit,
+        /// Agent is Revoked — deregistration is not permitted for revoked agents.
+        /// Revoked profiles are retained on-chain permanently for audit trail.
+        AgentAlreadyRevoked,
     }
 
     // -- Calls ----------------------------------------------------------------
@@ -610,6 +615,54 @@ pub mod pallet {
 
             Ok(())
         }
+
+        /// Deregister a registered agent and reclaim the controller's deposit.
+        ///
+        /// Deletes [`AgentProfile`] from the primary index, prunes the DID
+        /// from the [`ControllerAgents`] reverse-index, and unreserves the
+        /// [`Config::RegistrationDeposit`]. Only `Active` or `Suspended`
+        /// agents may deregister — `Revoked` is a terminal penalty state
+        /// whose profile is retained on-chain permanently and whose deposit
+        /// is not returned. Only the registered controller may call this.
+        /// Emits [`Event::AgentDeregistered`] on success.
+        #[pallet::call_index(5)]
+        #[pallet::weight(T::WeightInfo::deregister_agent(*did))]
+        pub fn deregister_agent(origin: OriginFor<T>, did: Did) -> DispatchResult {
+            // -- 1. Authenticate caller ---------------------------------------
+            let controller = ensure_signed(origin)?;
+
+            // -- 2. Fetch profile — DidNotFound if absent ---------------------
+            let profile = AgentProfiles::<T>::get(did).ok_or(Error::<T>::DidNotFound)?;
+
+            // -- 3. Verify caller is registered controller --------------------
+            ensure!(profile.controller == controller, Error::<T>::NotController);
+
+            // -- 4. Guard: Revoked is terminal — deposit forfeited, no exit --
+            ensure!(
+                profile.status != AgentStatus::Revoked,
+                Error::<T>::AgentAlreadyRevoked
+            );
+
+            // -- 5. Unreserve registration deposit — returned in full ---------
+            T::Currency::unreserve(&controller, T::RegistrationDeposit::get());
+
+            // -- 6. Prune did from reverse-index — sibling DIDs unaffected ----
+            ControllerAgents::<T>::try_mutate(&controller, |dids| {
+                dids.retain(|d| *d != did);
+                Ok::<(), DispatchError>(())
+            })?;
+
+            // -- 7. Delete primary profile — slot reclaimed (cf. Revoked) -----
+            AgentProfiles::<T>::remove(did);
+
+            // -- 8. Decrement active agent count (saturating) -----------------
+            ActiveAgentCount::<T>::mutate(|n| *n = n.saturating_sub(1));
+
+            // -- 9. Emit event -----------------------------------------------
+            Self::deposit_event(Event::AgentDeregistered { did, controller });
+
+            Ok(())
+        }
     }
 }
 
@@ -623,6 +676,7 @@ pub trait WeightInfo {
     fn set_agent_status() -> Weight;
     fn give_star(giver_did: Did, receiver: Did) -> Weight;
     fn remove_star(giver_did: Did, receiver: Did) -> Weight;
+    fn deregister_agent(did: Did) -> Weight;
 }
 
 pub struct SubstrateWeight<T>(core::marker::PhantomData<T>);
@@ -682,6 +736,17 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
             .saturating_add(Weight::from_parts(25_000_000 * 3, 0))
             .saturating_add(Weight::from_parts(100_000_000 * 2, 0))
     }
+    /// 3 reads: AgentProfiles::get, plus the internal get() inside
+    /// ControllerAgents::try_mutate and ActiveAgentCount::mutate
+    /// (both are get-then-put under the hood — confirmed against
+    /// frame-support's StorageMap/StorageValue source).
+    /// 3 writes: ControllerAgents::try_mutate write-back,
+    /// AgentProfiles::remove, ActiveAgentCount::mutate.
+    fn deregister_agent(_did: Did) -> Weight {
+        Weight::from_parts(6_000, 0)
+            .saturating_add(Weight::from_parts(25_000_000 * 3, 0))
+            .saturating_add(Weight::from_parts(100_000_000 * 3, 0))
+    }
 }
 
 impl WeightInfo for () {
@@ -710,5 +775,9 @@ impl WeightInfo for () {
     /// = 8_000 + (25_000_000 * 3) + (100_000_000 * 2)
     fn remove_star(_giver_did: Did, _receiver: Did) -> Weight {
         Weight::from_parts(275_008_000, 0)
+    }
+    /// = 6_000 + (25_000_000 * 3) + (100_000_000 * 3)
+    fn deregister_agent(_did: Did) -> Weight {
+        Weight::from_parts(375_006_000, 0)
     }
 }
