@@ -57,6 +57,13 @@ pub mod pallet {
 
     /// 64-bit permission mask. Each bit unlocks a specific network capability.
     /// Check with: `profile.capabilities & CAP_X != 0`
+    ///
+    /// Bits outside the defined `CAP_*` constants are intentionally
+    /// accepted by the protocol without validation. This keeps the
+    /// registry forward-compatible: new capability bits can be introduced
+    /// in a future runtime upgrade without invalidating agents registered
+    /// under an earlier set of constants. Capability semantics are
+    /// caller-defined — the registry records them, not enforces them.
     pub type CapabilityBitmap = u64;
 
     pub const CAP_DATA_PROVIDER: CapabilityBitmap = 1 << 0; // publish data feeds
@@ -313,6 +320,8 @@ pub mod pallet {
         /// window, pubkey/signature are malformed, or ML-DSA verification
         /// fails. On success, `is_verified` is always `true` (verification
         /// is atomic with registration — there is no unverified state).
+        /// `capabilities` accepts any `u64` value including undefined bits —
+        /// see [`CapabilityBitmap`] for the rationale.
         /// Emits [`Event::AgentRegistered`] on success.
         #[pallet::call_index(0)]
         #[pallet::weight(T::WeightInfo::register_agent())]
@@ -429,6 +438,9 @@ pub mod pallet {
         ///
         /// Only the registered controller may call this.
         /// Revoked agents cannot be updated.
+        /// `capabilities` accepts any `u64` value including undefined bits —
+        /// capability content is caller-defined, not a protocol invariant.
+        /// See [`CapabilityBitmap`] for the rationale.
         /// Emits [`Event::AgentProfileUpdated`] on success.
         #[pallet::call_index(1)]
         #[pallet::weight(T::WeightInfo::update_profile())]
