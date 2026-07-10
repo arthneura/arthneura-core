@@ -263,6 +263,10 @@ pub mod pallet {
         NotStarred,
         /// Self-starring not permitted.
         CannotStarSelf,
+        /// Giver and receiver are controlled by the same account.
+        /// Intra-controller starring is a sybil attack vector;
+        /// only cross-controller stars carry economic signal.
+        CannotStarSameController,
         /// Public key length != MAX_PUBKEY_LEN.
         InvalidPubkeyLength,
         /// Signature length != MAX_SIG_LEN.
@@ -471,8 +475,24 @@ pub mod pallet {
                 Error::<T>::AgentRevoked
             );
  
+            // -- 4b. Guard: no intra-controller starring ----------------------
+            // `giver` (signed AccountId, step 1) is the verified controller of
+            // `giver_did` (ownership confirmed in step 2). A controller farming
+            // reputation across its own DIDs is a sybil attack; only
+            // cross-controller stars carry economic signal.
+            // `receiver_profile` is already in scope from step 4 —
+            // this check requires no additional storage reads.
+            ensure!(
+                receiver_profile.controller != giver,
+                Error::<T>::CannotStarSameController
+            );
+
             // -- 5. Cooldown check -------------------------------------------
             // Zero means never starred. Non-zero is the last star block.
+            // Zero is a safe sentinel: Substrate never executes extrinsics at
+            // block 0 (genesis), so give_star cannot record a 0 here in
+            // practice. remove_star resets to 0 intentionally — this clears
+            // the cooldown, permitting immediate re-starring after removal.
             let last_star = StarGivers::<T>::get(giver_did, receiver);
             let current_block = <frame_system::Pallet<T>>::block_number();
             if last_star > BlockNumberFor::<T>::from(0u32) {
@@ -676,4 +696,3 @@ impl WeightInfo for () {
         Weight::from_parts(375_006_000, 0)
     }
 }
- 
