@@ -11,7 +11,7 @@ use frame_support::weights::Weight;
 pub use pallet::*;
 
 // NOTE: The unit test modules `mock` and `tests` are temporarily commented out
-// to facilitate incremental compilation checks of the core logic prior to the
+// to facilitate standalone compilation checks of the core logic prior to the
 // implementation of the local test suite.
 // #[cfg(test)]
 // mod mock;
@@ -34,8 +34,12 @@ pub trait AgentLookup<AccountId> {
 /// Blanket no-op implementation of `AgentLookup` to satisfy the trait bounds
 /// during testing or mock runtime configurations where identities are injected manually.
 impl<AccountId> AgentLookup<AccountId> for () {
-    fn controller_of(_did: &[u8; 32]) -> Option<AccountId> { None }
-    fn is_active_verified(_did: &[u8; 32]) -> bool { false }
+    fn controller_of(_did: &[u8; 32]) -> Option<AccountId> {
+        None
+    }
+    fn is_active_verified(_did: &[u8; 32]) -> bool {
+        false
+    }
 }
 
 // ── Pallet Module ────────────────────────────────────────────────────────────
@@ -70,9 +74,17 @@ pub mod pallet {
 
     /// Lifecycle states of an active on-chain vector commitment.
     #[derive(
-        Clone, Copy, PartialEq, Eq,
-        Encode, Decode, DecodeWithMemTracking,
-        TypeInfo, MaxEncodedLen, RuntimeDebug, Default,
+        Clone,
+        Copy,
+        PartialEq,
+        Eq,
+        Encode,
+        Decode,
+        DecodeWithMemTracking,
+        TypeInfo,
+        MaxEncodedLen,
+        RuntimeDebug,
+        Default,
     )]
     pub enum CommitmentStatus {
         /// Provider anchored the promise; awaiting consumer acknowledgement.
@@ -94,30 +106,61 @@ pub mod pallet {
 
     /// On-chain registry record anchoring a data-quality promise between two agents.
     #[derive(
-        Clone, PartialEq, Eq,
-        Encode, Decode, DecodeWithMemTracking,
-        TypeInfo, MaxEncodedLen, RuntimeDebug,
+        Clone,
+        PartialEq,
+        Eq,
+        Encode,
+        Decode,
+        DecodeWithMemTracking,
+        TypeInfo,
+        MaxEncodedLen,
+        RuntimeDebug,
     )]
     #[scale_info(skip_type_params(T))]
     pub struct VectorCommitment<T: Config> {
         /// Unique commitment ID derived from transaction parameters. Immutable.
-        pub commitment_id:    CommitmentId,
+        pub commitment_id: CommitmentId,
         /// Decentralized Identifier (DID) of the data provider (Agent A). Immutable.
-        pub provider:         Did,
+        pub provider: Did,
         /// Decentralized Identifier (DID) of the data consumer (Agent B). Immutable.
-        pub consumer:         Did,
+        pub consumer: Did,
         /// Blake2-256 hash representing the expected data qualities. Immutable.
-        pub vector_hash:      VectorHash,
+        pub vector_hash: VectorHash,
         /// Arbitrary metadata (e.g., schema parameters, descriptors). Max 256 bytes.
-        pub metadata:         BoundedVec<u8, ConstU32<MAX_METADATA_LEN>>,
+        pub metadata: BoundedVec<u8, ConstU32<MAX_METADATA_LEN>>,
         /// Current state of the commitment in its lifecycle.
-        pub status:           CommitmentStatus,
+        pub status: CommitmentStatus,
         /// Block number when the commitment was registered. Immutable.
-        pub created_at:       BlockNumberFor<T>,
+        pub created_at: BlockNumberFor<T>,
         /// Block number after which the commitment can be pruned. Immutable.
-        pub expires_at:       BlockNumberFor<T>,
+        pub expires_at: BlockNumberFor<T>,
         /// Block number when the consumer acknowledged. `None` if status is `Pending`.
-        pub acknowledged_at:  Option<BlockNumberFor<T>>,
+        pub acknowledged_at: Option<BlockNumberFor<T>>,
+    }
+
+    // -- Stream Receipt Structure ---------------------------------------------
+
+    /// Consumer-submitted terminal hash of the off-chain rolling hash chain.
+    /// Written once by `close_commitment` or `raise_dispute`; never mutated.
+    #[derive(
+        Clone,
+        PartialEq,
+        Eq,
+        Encode,
+        Decode,
+        DecodeWithMemTracking,
+        TypeInfo,
+        MaxEncodedLen,
+        RuntimeDebug,
+    )]
+    #[scale_info(skip_type_params(T))]
+    pub struct StreamReceipt<T: Config> {
+        pub commitment_id: CommitmentId,
+        /// H_n of the rolling chain: `H_0 = vector_hash`, `H_n = blake2_256(H_{n-1} || chunk_n)`.
+        pub final_stream_hash: VectorHash,
+        /// Chunks received off-chain. Informational; not validated on-chain.
+        pub chunk_count: u64,
+        pub submitted_at: BlockNumberFor<T>,
     }
 
     // -- Config Trait ---------------------------------------------------------
@@ -126,17 +169,17 @@ pub mod pallet {
     pub trait Config: frame_system::Config {
         /// The overarching runtime event type.
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
-        
+
         /// Weight specifications for dispatchable calls.
         type WeightInfo: WeightInfo;
-        
+
         /// Association with the external identity registry pallet.
         type AgentRegistry: AgentLookup<Self::AccountId>;
-        
+
         /// Number of blocks allowed for a provider to submit a counter-proof.
         #[pallet::constant]
         type DisputeWindow: Get<BlockNumberFor<Self>>;
-        
+
         /// Hard ceiling on commitment lifetimes to prevent storage exhaustion.
         #[pallet::constant]
         type MaxCommitmentLifetime: Get<BlockNumberFor<Self>>;
@@ -162,6 +205,12 @@ pub mod pallet {
     #[pallet::getter(fn active_commitment_count)]
     pub type ActiveCommitmentCount<T: Config> = StorageValue<_, u32, ValueQuery>;
 
+    /// Stream receipts: written once on `close_commitment` or `raise_dispute`; never mutated.
+    #[pallet::storage]
+    #[pallet::getter(fn stream_receipt)]
+    pub type StreamReceipts<T: Config> =
+        StorageMap<_, Blake2_128Concat, CommitmentId, StreamReceipt<T>, OptionQuery>;
+
     // -- Events ---------------------------------------------------------------
 
     #[pallet::event]
@@ -170,10 +219,15 @@ pub mod pallet {
         /// A data provider has registered a vector hash promise on-chain.
         CommitmentRegistered {
             commitment_id: CommitmentId,
-            provider:      Did,
-            consumer:      Did,
-            vector_hash:   VectorHash,
-            expires_at:    BlockNumberFor<T>,
+            provider: Did,
+            consumer: Did,
+            vector_hash: VectorHash,
+            expires_at: BlockNumberFor<T>,
+        },
+        /// Consumer acknowledged; off-chain gRPC streaming may begin.
+        CommitmentAcknowledged {
+            commitment_id: CommitmentId,
+            acknowledged_at: BlockNumberFor<T>,
         },
     }
 
@@ -199,17 +253,43 @@ pub mod pallet {
         ExpiryMustBePositive,
         /// Expiry parameter exceeds `MaxCommitmentLifetime`.
         ExpiryTooFar,
+        /// `current_block >= commitment.expires_at`.
+        CommitmentExpiredError,
+        /// Operation requires `Pending` status.
+        NotPending,
+        /// Operation requires `Active` status.
+        NotActive,
+        /// Operation requires `Disputed` status.
+        NotDisputed,
+        /// Commitment is already `Settled`, `DisputeResolved`, or `Expired`.
+        AlreadyFinalized,
+        /// `close_commitment`: hashes differ — use `raise_dispute` instead.
+        StreamHashMismatch,
+        /// `raise_dispute`: hashes match — use `close_commitment` instead.
+        StreamHashMatches,
+        /// A `DisputeRecord` already exists for this commitment.
+        DisputeAlreadyRaised,
+        /// `finalize_dispute` called before `counter_deadline` passed.
+        DisputeWindowStillOpen,
+        /// `counter_dispute` called after `counter_deadline` passed.
+        DisputeWindowExpired,
+        /// `blake2_256(vector_preimage) != dispute.committed_hash`.
+        InvalidCounterProof,
+        /// `expire_commitment` called before `commitment.expires_at`.
+        NotYetExpired,
     }
 
     // -- Dispatchables (Extrinsics) -------------------------------------------
 
     #[pallet::call]
     impl<T: Config> Pallet<T> {
-
-        /// Registers a new vector commitment on-chain.
+        /// Anchors a provider's data-quality commitment hash on-chain.
         ///
-        /// Provider (Agent A) locks in their cryptographic data-quality promise.
-        /// Emits `CommitmentRegistered` on success.
+        /// # Invariants & Guards:
+        /// - `provider_did` MUST NOT equal `consumer_did` (wash-trading prevention).
+        /// - Both identities MUST be registered, `Active`, and `is_verified == true`.
+        /// - `expires_in_blocks` MUST be within `[1, MaxCommitmentLifetime]`.
+        /// - The derived `CommitmentId` MUST NOT already exist in storage.
         #[pallet::call_index(0)]
         #[pallet::weight(T::WeightInfo::register_commitment())]
         pub fn register_commitment(
@@ -222,15 +302,15 @@ pub mod pallet {
         ) -> DispatchResult {
             let caller = ensure_signed(origin)?;
 
-            // 1. Self-trade prevention
+            // 1. Guard against wash trading or self-commitments
             ensure!(provider_did != consumer_did, Error::<T>::SelfTrade);
 
-            // 2. Authorization authority check
+            // 2. Validate cryptographic ownership / controller bounds
             let provider_controller = T::AgentRegistry::controller_of(&provider_did)
                 .ok_or(Error::<T>::ProviderNotEligible)?;
             ensure!(provider_controller == caller, Error::<T>::NotProvider);
 
-            // 3. Status eligibility checks
+            // 3. Enforce lifecycle and verification status bounds
             ensure!(
                 T::AgentRegistry::is_active_verified(&provider_did),
                 Error::<T>::ProviderNotEligible
@@ -240,7 +320,7 @@ pub mod pallet {
                 Error::<T>::ConsumerNotEligible
             );
 
-            // 4. Lifespan checks
+            // 4. Validate lifespan constraints against storage exhaustion limits
             let current_block = <frame_system::Pallet<T>>::block_number();
             ensure!(
                 expires_in_blocks > BlockNumberFor::<T>::from(0u32),
@@ -252,7 +332,7 @@ pub mod pallet {
             );
             let expires_at = current_block.saturating_add(expires_in_blocks);
 
-            // 5. Unique, domain-separated commitment ID derivation
+            // 5. Derive a collision-resistant, domain-separated commitment identifier
             let commitment_id: CommitmentId = {
                 let mut preimage = b"ArthNeura-Vector-v1".to_vec();
                 preimage.extend_from_slice(&provider_did);
@@ -267,15 +347,15 @@ pub mod pallet {
                 Error::<T>::CommitmentAlreadyExists
             );
 
-            // 6. Write record to storage
+            // 6. Persist state and increment global tracking metrics
             let commitment = VectorCommitment::<T> {
                 commitment_id,
-                provider:        provider_did,
-                consumer:        consumer_did,
+                provider: provider_did,
+                consumer: consumer_did,
                 vector_hash,
                 metadata,
-                status:          CommitmentStatus::Pending,
-                created_at:      current_block,
+                status: CommitmentStatus::Pending,
+                created_at: current_block,
                 expires_at,
                 acknowledged_at: None,
             };
@@ -284,10 +364,67 @@ pub mod pallet {
 
             Self::deposit_event(Event::CommitmentRegistered {
                 commitment_id,
-                provider:   provider_did,
-                consumer:   consumer_did,
+                provider: provider_did,
+                consumer: consumer_did,
                 vector_hash,
                 expires_at,
+            });
+            Ok(())
+        }
+
+        /// Acknowledges a pending vector commitment, transitioning its status to `Active`.
+        ///
+        /// # Invariants & Guards:
+        /// - Target commitment MUST exist and have a status of `CommitmentStatus::Pending`.
+        /// - Current block height MUST be strictly less than `expires_at` (expiry prevention).
+        /// - The registered consumer DID MUST match the provided `consumer_did`.
+        /// - The caller MUST be the authorized controller of the `consumer_did`.
+        /// - The consumer agent MUST still be `Active` and `is_verified == true`.
+        #[pallet::call_index(1)]
+        #[pallet::weight(T::WeightInfo::acknowledge_commitment())]
+        pub fn acknowledge_commitment(
+            origin: OriginFor<T>,
+            commitment_id: CommitmentId,
+            consumer_did: Did,
+        ) -> DispatchResult {
+            let caller = ensure_signed(origin)?;
+
+            // 1. Validate target existence and current state invariant
+            let mut commitment =
+                VectorCommitments::<T>::get(commitment_id).ok_or(Error::<T>::CommitmentNotFound)?;
+
+            ensure!(
+                commitment.status == CommitmentStatus::Pending,
+                Error::<T>::NotPending
+            );
+
+            // 2. Reject if the commitment has passed its expiration block height
+            let current_block = <frame_system::Pallet<T>>::block_number();
+            ensure!(
+                current_block < commitment.expires_at,
+                Error::<T>::CommitmentExpiredError
+            );
+
+            // 3. Authenticate controller bounds over the consumer identity
+            ensure!(commitment.consumer == consumer_did, Error::<T>::NotConsumer);
+            let consumer_controller = T::AgentRegistry::controller_of(&consumer_did)
+                .ok_or(Error::<T>::ConsumerNotEligible)?;
+            ensure!(consumer_controller == caller, Error::<T>::NotConsumer);
+
+            // 4. Verify consumer remains eligible (un-suspended/un-revoked) at call time
+            ensure!(
+                T::AgentRegistry::is_active_verified(&consumer_did),
+                Error::<T>::ConsumerNotEligible
+            );
+
+            // 5. Commit state transition and persist acknowledgement block height
+            commitment.status = CommitmentStatus::Active;
+            commitment.acknowledged_at = Some(current_block);
+            VectorCommitments::<T>::insert(commitment_id, commitment);
+
+            Self::deposit_event(Event::CommitmentAcknowledged {
+                commitment_id,
+                acknowledged_at: current_block,
             });
             Ok(())
         }
@@ -300,10 +437,16 @@ pub mod pallet {
 pub trait WeightInfo {
     /// Evaluates execution weight for the `register_commitment` extrinsic.
     fn register_commitment() -> Weight;
+    /// Evaluates execution weight for the `acknowledge_commitment` extrinsic.
+    fn acknowledge_commitment() -> Weight;
 }
 
 impl WeightInfo for () {
     fn register_commitment() -> Weight {
         Weight::default()
+    }
+    /// Evaluates estimated execution weight for the `acknowledge_commitment` extrinsic.
+    fn acknowledge_commitment() -> Weight {
+        Weight::from_parts(150_006_000, 0)
     }
 }
