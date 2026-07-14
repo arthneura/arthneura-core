@@ -10,6 +10,7 @@ members = [
     "node",
     "pallets/template",
     "pallets/pallet-agent-registry",
+    "pallets/pallet-vector-db", # <--- Badlaav 1: Naya pallet register kiya
     "runtime",
 ]
 resolver = "2"
@@ -18,6 +19,7 @@ resolver = "2"
 solochain-template-runtime = { path = "./runtime", default-features = false }
 pallet-template = { path = "./pallets/template", default-features = false }
 pallet-agent-registry = { path = "./pallets/pallet-agent-registry", default-features = false }
+pallet-vector-db = { path = "./pallets/pallet-vector-db", default-features = false } # <--- Badlaav 2: Pallet ka dependency path map kiya
 clap = { version = "4.5.13" }
 frame-benchmarking-cli = { version = "47.0.0", default-features = false }
 frame-metadata-hash-extension = { version = "0.8.0", default-features = false }
@@ -83,4 +85,3 @@ panic = "unwind"
 codegen-units = 1
 inherits = "release"
 lto = true
-
