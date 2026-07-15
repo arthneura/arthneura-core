@@ -18,7 +18,9 @@ pub use pallet::*;
 
 /// Interface for validating off-pallet agent registration and verification states.
 pub trait AgentLookup<AccountId> {
+    /// Resolves the controller account for a given DID.
     fn controller_of(did: &[u8; 32]) -> Option<AccountId>;
+    /// Validates that an agent is active and holds a verified identity state.
     fn is_active_verified(did: &[u8; 32]) -> bool;
 }
 
@@ -260,6 +262,8 @@ pub mod pallet {
             provider: Did,
             consumer: Did,
         },
+        /// Commitment passed `expires_at` without settlement or dispute.
+        CommitmentExpired { commitment_id: CommitmentId },
     }
 
     // -- Errors ---------------------------------------------------------------
@@ -688,6 +692,45 @@ pub mod pallet {
             });
             Ok(())
         }
+
+        /// Reclaims storage for an expired commitment past its lifespan threshold.
+        ///
+        /// Permissionless. Only Pending and Active commitments are eligible.
+        /// Terminal states and open disputes are explicitly rejected.
+        #[pallet::call_index(6)]
+        #[pallet::weight(T::WeightInfo::expire_commitment())]
+        pub fn expire_commitment(
+            origin: OriginFor<T>,
+            commitment_id: CommitmentId,
+        ) -> DispatchResult {
+            ensure_signed(origin)?;
+
+            let commitment =
+                VectorCommitments::<T>::get(commitment_id).ok_or(Error::<T>::CommitmentNotFound)?;
+
+            // 1. Only live states are expirable; terminal states are immutable.
+            ensure!(
+                matches!(
+                    commitment.status,
+                    CommitmentStatus::Pending | CommitmentStatus::Active
+                ),
+                Error::<T>::AlreadyFinalized
+            );
+
+            // 2. Current block must have reached or passed expires_at
+            let current_block = <frame_system::Pallet<T>>::block_number();
+            ensure!(
+                current_block >= commitment.expires_at,
+                Error::<T>::NotYetExpired
+            );
+
+            // 3. Purge record from storage and decrement active count
+            VectorCommitments::<T>::remove(commitment_id);
+            ActiveCommitmentCount::<T>::mutate(|n| *n = n.saturating_sub(1));
+
+            Self::deposit_event(Event::CommitmentExpired { commitment_id });
+            Ok(())
+        }
     }
 }
 
@@ -701,6 +744,7 @@ pub trait WeightInfo {
     fn raise_dispute() -> Weight;
     fn counter_dispute() -> Weight;
     fn finalize_dispute() -> Weight;
+    fn expire_commitment() -> Weight;
 }
 
 impl WeightInfo for () {
@@ -726,5 +770,9 @@ impl WeightInfo for () {
     /// Evaluates estimated execution weight for the `finalize_dispute` extrinsic.
     fn finalize_dispute() -> Weight {
         Weight::from_parts(350_006_000, 0)
+    }
+    /// Evaluates estimated execution weight for the `expire_commitment` extrinsic.
+    fn expire_commitment() -> Weight {
+        Weight::from_parts(225_004_000, 0)
     }
 }
