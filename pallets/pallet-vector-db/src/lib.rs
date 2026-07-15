@@ -74,17 +74,9 @@ pub mod pallet {
 
     /// Lifecycle states of an active on-chain vector commitment.
     #[derive(
-        Clone,
-        Copy,
-        PartialEq,
-        Eq,
-        Encode,
-        Decode,
-        DecodeWithMemTracking,
-        TypeInfo,
-        MaxEncodedLen,
-        RuntimeDebug,
-        Default,
+        Clone, Copy, PartialEq, Eq,
+        Encode, Decode, DecodeWithMemTracking,
+        TypeInfo, MaxEncodedLen, RuntimeDebug, Default,
     )]
     pub enum CommitmentStatus {
         /// Provider anchored the promise; awaiting consumer acknowledgement.
@@ -106,36 +98,30 @@ pub mod pallet {
 
     /// On-chain registry record anchoring a data-quality promise between two agents.
     #[derive(
-        Clone,
-        PartialEq,
-        Eq,
-        Encode,
-        Decode,
-        DecodeWithMemTracking,
-        TypeInfo,
-        MaxEncodedLen,
-        RuntimeDebug,
+        Clone, PartialEq, Eq,
+        Encode, Decode, DecodeWithMemTracking,
+        TypeInfo, MaxEncodedLen, RuntimeDebug,
     )]
     #[scale_info(skip_type_params(T))]
     pub struct VectorCommitment<T: Config> {
         /// Unique commitment ID derived from transaction parameters. Immutable.
-        pub commitment_id: CommitmentId,
+        pub commitment_id:    CommitmentId,
         /// Decentralized Identifier (DID) of the data provider (Agent A). Immutable.
-        pub provider: Did,
+        pub provider:         Did,
         /// Decentralized Identifier (DID) of the data consumer (Agent B). Immutable.
-        pub consumer: Did,
+        pub consumer:         Did,
         /// Blake2-256 hash representing the expected data qualities. Immutable.
-        pub vector_hash: VectorHash,
+        pub vector_hash:      VectorHash,
         /// Arbitrary metadata (e.g., schema parameters, descriptors). Max 256 bytes.
-        pub metadata: BoundedVec<u8, ConstU32<MAX_METADATA_LEN>>,
+        pub metadata:         BoundedVec<u8, ConstU32<MAX_METADATA_LEN>>,
         /// Current state of the commitment in its lifecycle.
-        pub status: CommitmentStatus,
+        pub status:           CommitmentStatus,
         /// Block number when the commitment was registered. Immutable.
-        pub created_at: BlockNumberFor<T>,
+        pub created_at:       BlockNumberFor<T>,
         /// Block number after which the commitment can be pruned. Immutable.
-        pub expires_at: BlockNumberFor<T>,
+        pub expires_at:       BlockNumberFor<T>,
         /// Block number when the consumer acknowledged. `None` if status is `Pending`.
-        pub acknowledged_at: Option<BlockNumberFor<T>>,
+        pub acknowledged_at:  Option<BlockNumberFor<T>>,
     }
 
     // -- Stream Receipt Structure ---------------------------------------------
@@ -143,24 +129,18 @@ pub mod pallet {
     /// Consumer-submitted terminal hash of the off-chain rolling hash chain.
     /// Written once by `close_commitment` or `raise_dispute`; never mutated.
     #[derive(
-        Clone,
-        PartialEq,
-        Eq,
-        Encode,
-        Decode,
-        DecodeWithMemTracking,
-        TypeInfo,
-        MaxEncodedLen,
-        RuntimeDebug,
+        Clone, PartialEq, Eq,
+        Encode, Decode, DecodeWithMemTracking,
+        TypeInfo, MaxEncodedLen, RuntimeDebug,
     )]
     #[scale_info(skip_type_params(T))]
     pub struct StreamReceipt<T: Config> {
-        pub commitment_id: CommitmentId,
+        pub commitment_id:     CommitmentId,
         /// H_n of the rolling chain: `H_0 = vector_hash`, `H_n = blake2_256(H_{n-1} || chunk_n)`.
         pub final_stream_hash: VectorHash,
         /// Chunks received off-chain. Informational; not validated on-chain.
-        pub chunk_count: u64,
-        pub submitted_at: BlockNumberFor<T>,
+        pub chunk_count:       u64,
+        pub submitted_at:      BlockNumberFor<T>,
     }
 
     // -- Config Trait ---------------------------------------------------------
@@ -169,17 +149,17 @@ pub mod pallet {
     pub trait Config: frame_system::Config {
         /// The overarching runtime event type.
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
-
+        
         /// Weight specifications for dispatchable calls.
         type WeightInfo: WeightInfo;
-
+        
         /// Association with the external identity registry pallet.
         type AgentRegistry: AgentLookup<Self::AccountId>;
-
+        
         /// Number of blocks allowed for a provider to submit a counter-proof.
         #[pallet::constant]
         type DisputeWindow: Get<BlockNumberFor<Self>>;
-
+        
         /// Hard ceiling on commitment lifetimes to prevent storage exhaustion.
         #[pallet::constant]
         type MaxCommitmentLifetime: Get<BlockNumberFor<Self>>;
@@ -219,15 +199,21 @@ pub mod pallet {
         /// A data provider has registered a vector hash promise on-chain.
         CommitmentRegistered {
             commitment_id: CommitmentId,
-            provider: Did,
-            consumer: Did,
-            vector_hash: VectorHash,
-            expires_at: BlockNumberFor<T>,
+            provider:      Did,
+            consumer:      Did,
+            vector_hash:   VectorHash,
+            expires_at:    BlockNumberFor<T>,
         },
         /// Consumer acknowledged; off-chain gRPC streaming may begin.
         CommitmentAcknowledged {
-            commitment_id: CommitmentId,
+            commitment_id:   CommitmentId,
             acknowledged_at: BlockNumberFor<T>,
+        },
+        /// `final_stream_hash == vector_hash` — clean settlement confirmed. Terminal.
+        CommitmentSettled {
+            commitment_id:     CommitmentId,
+            final_stream_hash: VectorHash,
+            chunk_count:       u64,
         },
     }
 
@@ -283,6 +269,7 @@ pub mod pallet {
 
     #[pallet::call]
     impl<T: Config> Pallet<T> {
+
         /// Anchors a provider's data-quality commitment hash on-chain.
         ///
         /// # Invariants & Guards:
@@ -350,12 +337,12 @@ pub mod pallet {
             // 6. Persist state and increment global tracking metrics
             let commitment = VectorCommitment::<T> {
                 commitment_id,
-                provider: provider_did,
-                consumer: consumer_did,
+                provider:        provider_did,
+                consumer:        consumer_did,
                 vector_hash,
                 metadata,
-                status: CommitmentStatus::Pending,
-                created_at: current_block,
+                status:          CommitmentStatus::Pending,
+                created_at:      current_block,
                 expires_at,
                 acknowledged_at: None,
             };
@@ -364,8 +351,8 @@ pub mod pallet {
 
             Self::deposit_event(Event::CommitmentRegistered {
                 commitment_id,
-                provider: provider_did,
-                consumer: consumer_did,
+                provider:   provider_did,
+                consumer:   consumer_did,
                 vector_hash,
                 expires_at,
             });
@@ -428,6 +415,74 @@ pub mod pallet {
             });
             Ok(())
         }
+
+        /// Settles an active commitment upon successful, verified off-chain delivery.
+        ///
+        /// # Invariants & Guards:
+        /// - Target commitment MUST exist and have a status of `CommitmentStatus::Active`.
+        /// - Current block height MUST be strictly less than `expires_at` (expiry prevention).
+        /// - The registered consumer DID MUST match the provided `consumer_did`.
+        /// - The caller MUST be the authorized controller of the `consumer_did`.
+        /// - `final_stream_hash` MUST exactly equal the registered `vector_hash` (quality gate).
+        #[pallet::call_index(2)]
+        #[pallet::weight(T::WeightInfo::close_commitment())]
+        pub fn close_commitment(
+            origin: OriginFor<T>,
+            commitment_id: CommitmentId,
+            consumer_did: Did,
+            final_stream_hash: VectorHash,
+            chunk_count: u64,
+        ) -> DispatchResult {
+            let caller = ensure_signed(origin)?;
+
+            // 1. Validate target existence and current state invariant
+            let mut commitment = VectorCommitments::<T>::get(commitment_id)
+                .ok_or(Error::<T>::CommitmentNotFound)?;
+
+            ensure!(
+                commitment.status == CommitmentStatus::Active,
+                Error::<T>::NotActive
+            );
+
+            // 2. Reject if the transaction is processed post-expiration block height
+            let current_block = <frame_system::Pallet<T>>::block_number();
+            ensure!(
+                current_block < commitment.expires_at,
+                Error::<T>::CommitmentExpiredError
+            );
+
+            // 3. Authenticate controller bounds over the consumer identity
+            ensure!(commitment.consumer == consumer_did, Error::<T>::NotConsumer);
+            let consumer_controller = T::AgentRegistry::controller_of(&consumer_did)
+                .ok_or(Error::<T>::ConsumerNotEligible)?;
+            ensure!(consumer_controller == caller, Error::<T>::NotConsumer);
+
+            // 4. Cryptographic validation of the delivered stream hash
+            ensure!(
+                final_stream_hash == commitment.vector_hash,
+                Error::<T>::StreamHashMismatch
+            );
+
+            // 5. Persist the receipt, update status to Settled, and decrement tracking count
+            let receipt = StreamReceipt::<T> {
+                commitment_id,
+                final_stream_hash,
+                chunk_count,
+                submitted_at: current_block,
+            };
+            StreamReceipts::<T>::insert(commitment_id, receipt);
+
+            commitment.status = CommitmentStatus::Settled;
+            VectorCommitments::<T>::insert(commitment_id, commitment);
+            ActiveCommitmentCount::<T>::mutate(|n| *n = n.saturating_sub(1));
+
+            Self::deposit_event(Event::CommitmentSettled {
+                commitment_id,
+                final_stream_hash,
+                chunk_count,
+            });
+            Ok(())
+        }
     }
 }
 
@@ -439,6 +494,8 @@ pub trait WeightInfo {
     fn register_commitment() -> Weight;
     /// Evaluates execution weight for the `acknowledge_commitment` extrinsic.
     fn acknowledge_commitment() -> Weight;
+    /// Evaluates execution weight for the `close_commitment` extrinsic.
+    fn close_commitment() -> Weight;
 }
 
 impl WeightInfo for () {
@@ -448,5 +505,9 @@ impl WeightInfo for () {
     /// Evaluates estimated execution weight for the `acknowledge_commitment` extrinsic.
     fn acknowledge_commitment() -> Weight {
         Weight::from_parts(150_006_000, 0)
+    }
+    /// Evaluates estimated execution weight for the `close_commitment` extrinsic.
+    fn close_commitment() -> Weight {
+        Weight::from_parts(350_006_000, 0)
     }
 }
