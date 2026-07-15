@@ -1,6 +1,6 @@
 //! # Pallet Vector DB
 //!
-//! On-chain vector hash commitment registry and transactional dispute adjudicator.
+//! On-chain commitment registry and transactional dispute adjudicator.
 //! Anchors cryptographic vector hashes to facilitate secure, off-chain data streaming.
 
 #![cfg_attr(not(feature = "std"), no_std)]
@@ -251,6 +251,11 @@ pub mod pallet {
             received_hash: VectorHash,
             counter_deadline: BlockNumberFor<T>,
         },
+        /// Provider submitted a valid vector preimage within the dispute window.
+        DisputeCountered {
+            commitment_id: CommitmentId,
+            verdict: DisputeVerdict,
+        },
     }
 
     // -- Errors ---------------------------------------------------------------
@@ -280,18 +285,18 @@ pub mod pallet {
         NotYetExpired,
     }
 
-    // -- Extrinsics -----------------------------------------------------------
+    // -- Dispatchables (Extrinsics) -------------------------------------------
 
     #[pallet::call]
     impl<T: Config> Pallet<T> {
-        /// Registers and anchors a new vector commitment on-chain.
+        /// Anchors a provider's data-quality commitment hash on-chain.
         ///
         /// # Preconditions:
         /// - `provider_did` MUST NOT equal `consumer_did` (wash-trading prevention).
         /// - Caller MUST be the authorized controller of the `provider_did`.
         /// - Both identities MUST be registered, `Active`, and `is_verified == true`.
         /// - `expires_in_blocks` MUST be within `[1, MaxCommitmentLifetime]`.
-        /// - Derived `CommitmentId` MUST NOT already exist in storage.
+        /// - The derived `CommitmentId` MUST NOT already exist in storage.
         #[pallet::call_index(0)]
         #[pallet::weight(T::WeightInfo::register_commitment())]
         pub fn register_commitment(
@@ -307,7 +312,7 @@ pub mod pallet {
             // 1. Prevent self-trades (Sybil vectors)
             ensure!(provider_did != consumer_did, Error::<T>::SelfTrade);
 
-            // 2. Validate provider ownership bounds
+            // 2. Authorize provider controller
             let provider_controller = T::AgentRegistry::controller_of(&provider_did)
                 .ok_or(Error::<T>::ProviderNotEligible)?;
             ensure!(provider_controller == caller, Error::<T>::NotProvider);
@@ -349,7 +354,7 @@ pub mod pallet {
                 Error::<T>::CommitmentAlreadyExists
             );
 
-            // 6. Write state and increment active commitment metrics
+            // 6. Persist state and increment global tracking metrics
             let commitment = VectorCommitment::<T> {
                 commitment_id,
                 provider: provider_did,
@@ -582,6 +587,70 @@ pub mod pallet {
             });
             Ok(())
         }
+
+        /// Refutes an open dispute by submitting the raw vector preimage within the dispute window.
+        ///
+        /// # Preconditions:
+        /// - Target commitment MUST exist and have a status of `CommitmentStatus::Disputed`.
+        /// - Caller MUST be the authorized controller of the `provider_did`.
+        /// - Current block height MUST be less than or equal to `dispute.counter_deadline`.
+        /// - `blake2_256(vector_preimage)` MUST exactly equal `dispute.committed_hash`.
+        #[pallet::call_index(4)]
+        #[pallet::weight(T::WeightInfo::counter_dispute())]
+        pub fn counter_dispute(
+            origin: OriginFor<T>,
+            commitment_id: CommitmentId,
+            provider_did: Did,
+            vector_preimage: BoundedVec<u8, ConstU32<MAX_PREIMAGE_LEN>>,
+        ) -> DispatchResult {
+            let caller = ensure_signed(origin)?;
+
+            // 1. Fetch record and verify Disputed state precondition
+            let mut commitment =
+                VectorCommitments::<T>::get(commitment_id).ok_or(Error::<T>::CommitmentNotFound)?;
+
+            ensure!(
+                commitment.status == CommitmentStatus::Disputed,
+                Error::<T>::NotDisputed
+            );
+
+            // 2. Authenticate provider origin parameters
+            ensure!(commitment.provider == provider_did, Error::<T>::NotProvider);
+            let provider_controller = T::AgentRegistry::controller_of(&provider_did)
+                .ok_or(Error::<T>::ProviderNotEligible)?;
+            ensure!(provider_controller == caller, Error::<T>::NotProvider);
+
+            // 3. Verify execution occurs within the allotted response window
+            let current_block = <frame_system::Pallet<T>>::block_number();
+            let mut dispute =
+                DisputeRecords::<T>::get(commitment_id).ok_or(Error::<T>::CommitmentNotFound)?;
+            ensure!(
+                current_block <= dispute.counter_deadline,
+                Error::<T>::DisputeWindowExpired
+            );
+
+            // 4. Cryptographic validation of the submitted preimage
+            let preimage_hash: VectorHash = sp_io::hashing::blake2_256(&vector_preimage);
+            ensure!(
+                preimage_hash == dispute.committed_hash,
+                Error::<T>::InvalidCounterProof
+            );
+
+            // 5. Persist the verdict, update status to DisputeResolved, and decrement tracking count
+            let verdict = DisputeVerdict::ClaimantUnsubstantiated;
+            dispute.verdict = Some(verdict);
+            DisputeRecords::<T>::insert(commitment_id, dispute);
+
+            commitment.status = CommitmentStatus::DisputeResolved;
+            VectorCommitments::<T>::insert(commitment_id, commitment);
+            ActiveCommitmentCount::<T>::mutate(|n| *n = n.saturating_sub(1));
+
+            Self::deposit_event(Event::DisputeCountered {
+                commitment_id,
+                verdict,
+            });
+            Ok(())
+        }
     }
 }
 
@@ -597,6 +666,8 @@ pub trait WeightInfo {
     fn close_commitment() -> Weight;
     /// Evaluates execution weight for the `raise_dispute` extrinsic.
     fn raise_dispute() -> Weight;
+    /// Evaluates execution weight for the `counter_dispute` extrinsic.
+    fn counter_dispute() -> Weight;
 }
 
 impl WeightInfo for () {
@@ -614,5 +685,9 @@ impl WeightInfo for () {
     /// Evaluates estimated execution weight for the `raise_dispute` extrinsic.
     fn raise_dispute() -> Weight {
         Weight::from_parts(375_008_000, 0)
+    }
+    /// Evaluates estimated execution weight for the `counter_dispute` extrinsic.
+    fn counter_dispute() -> Weight {
+        Weight::from_parts(405_010_000, 0)
     }
 }
