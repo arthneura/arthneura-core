@@ -18,13 +18,11 @@ pub use pallet::*;
 
 /// Interface for validating off-pallet agent registration and verification states.
 pub trait AgentLookup<AccountId> {
-    /// Resolves the controller account for a given DID.
     fn controller_of(did: &[u8; 32]) -> Option<AccountId>;
-    /// Validates that an agent is active and holds a verified identity state.
     fn is_active_verified(did: &[u8; 32]) -> bool;
 }
 
-/// Default fallback implementation for tests/dependency isolation.
+/// Blanket no-op implementation for tests/dependency isolation.
 impl<AccountId> AgentLookup<AccountId> for () {
     fn controller_of(_did: &[u8; 32]) -> Option<AccountId> {
         None
@@ -39,6 +37,7 @@ impl<AccountId> AgentLookup<AccountId> for () {
 #[frame_support::pallet]
 pub mod pallet {
     use crate::{AgentLookup, WeightInfo};
+    use frame_support::traits::Get;
     use frame_support::{pallet_prelude::*, sp_runtime::Saturating};
     use frame_system::pallet_prelude::*;
 
@@ -73,18 +72,18 @@ pub mod pallet {
         Default,
     )]
     pub enum CommitmentStatus {
-        /// Initial state; provider anchored commitment, awaiting consumer acknowledgment.
+        /// Provider anchored commitment; awaiting consumer acknowledgment.
         #[default]
         Pending,
         /// Consumer acknowledged; off-chain streaming authorized to begin.
         Active,
-        /// Execution verified; clean cryptographic settlement achieved. Terminal state.
+        /// Execution verified; clean cryptographic settlement achieved. Terminal.
         Settled,
-        /// Hash mismatch reported; dispute response window is open. Active state.
+        /// Hash mismatch reported; dispute response window is open. Active.
         Disputed,
-        /// Dispute adjudicated and finalized. Terminal state.
+        /// Dispute adjudicated and finalized. Terminal.
         DisputeResolved,
-        /// Commitment lifespan exceeded without settlement or dispute. Terminal state.
+        /// Commitment lifespan exceeded without settlement or dispute. Terminal.
         Expired,
     }
 
@@ -251,10 +250,15 @@ pub mod pallet {
             received_hash: VectorHash,
             counter_deadline: BlockNumberFor<T>,
         },
-        /// Provider submitted a valid vector preimage within the dispute window.
         DisputeCountered {
             commitment_id: CommitmentId,
             verdict: DisputeVerdict,
+        },
+        DisputeFinalized {
+            commitment_id: CommitmentId,
+            verdict: DisputeVerdict,
+            provider: Did,
+            consumer: Did,
         },
     }
 
@@ -291,12 +295,8 @@ pub mod pallet {
     impl<T: Config> Pallet<T> {
         /// Anchors a provider's data-quality commitment hash on-chain.
         ///
-        /// # Preconditions:
-        /// - `provider_did` MUST NOT equal `consumer_did` (wash-trading prevention).
-        /// - Caller MUST be the authorized controller of the `provider_did`.
-        /// - Both identities MUST be registered, `Active`, and `is_verified == true`.
-        /// - `expires_in_blocks` MUST be within `[1, MaxCommitmentLifetime]`.
-        /// - The derived `CommitmentId` MUST NOT already exist in storage.
+        /// Invariants: Provider/consumer DIDs must be active and verified.
+        /// Expiry block must be within limits. Commitment ID must be unique.
         #[pallet::call_index(0)]
         #[pallet::weight(T::WeightInfo::register_commitment())]
         pub fn register_commitment(
@@ -309,7 +309,7 @@ pub mod pallet {
         ) -> DispatchResult {
             let caller = ensure_signed(origin)?;
 
-            // 1. Prevent self-trades (Sybil vectors)
+            // 1. Prevent self-trades
             ensure!(provider_did != consumer_did, Error::<T>::SelfTrade);
 
             // 2. Authorize provider controller
@@ -327,7 +327,7 @@ pub mod pallet {
                 Error::<T>::ConsumerNotEligible
             );
 
-            // 4. Validate and calculate block-based expiration bounds
+            // 4. Calculate expiration block height
             let current_block = <frame_system::Pallet<T>>::block_number();
             ensure!(
                 expires_in_blocks > BlockNumberFor::<T>::from(0u32),
@@ -339,7 +339,7 @@ pub mod pallet {
             );
             let expires_at = current_block.saturating_add(expires_in_blocks);
 
-            // 5. Generate block-anchored, domain-separated commitment identifier
+            // 5. Generate unique, domain-separated commitment identifier
             let commitment_id: CommitmentId = {
                 let mut preimage = b"ArthNeura-Vector-v1".to_vec();
                 preimage.extend_from_slice(&provider_did);
@@ -354,7 +354,7 @@ pub mod pallet {
                 Error::<T>::CommitmentAlreadyExists
             );
 
-            // 6. Persist state and increment global tracking metrics
+            // 6. Write commitment record and increment global metrics
             let commitment = VectorCommitment::<T> {
                 commitment_id,
                 provider: provider_did,
@@ -379,14 +379,10 @@ pub mod pallet {
             Ok(())
         }
 
-        /// Acknowledges a pending vector commitment, transitioning its status to `Active`.
+        /// Acknowledges a pending vector commitment, transitioning status to `Active`.
         ///
-        /// # Preconditions:
-        /// - Target commitment MUST exist and have a status of `CommitmentStatus::Pending`.
-        /// - Current block height MUST be strictly less than `expires_at` (expiry prevention).
-        /// - The registered consumer DID MUST match the provided `consumer_did`.
-        /// - The caller MUST be the authorized controller of the `consumer_did`.
-        /// - The consumer agent MUST still be `Active` and `is_verified == true`.
+        /// Invariants: Only callable by the consumer's controller before the
+        /// commitment expires. Consumer DID must remain active and verified.
         #[pallet::call_index(1)]
         #[pallet::weight(T::WeightInfo::acknowledge_commitment())]
         pub fn acknowledge_commitment(
@@ -412,7 +408,7 @@ pub mod pallet {
                 Error::<T>::CommitmentExpiredError
             );
 
-            // 3. Authenticate consumer origin against registered parameters
+            // 3. Authenticate consumer origin parameters
             ensure!(commitment.consumer == consumer_did, Error::<T>::NotConsumer);
             let consumer_controller = T::AgentRegistry::controller_of(&consumer_did)
                 .ok_or(Error::<T>::ConsumerNotEligible)?;
@@ -424,7 +420,7 @@ pub mod pallet {
                 Error::<T>::ConsumerNotEligible
             );
 
-            // 5. Transition state to Active and record block timestamp
+            // 5. Commit state transition to Active and record block height
             commitment.status = CommitmentStatus::Active;
             commitment.acknowledged_at = Some(current_block);
             VectorCommitments::<T>::insert(commitment_id, commitment);
@@ -438,12 +434,8 @@ pub mod pallet {
 
         /// Settles an active commitment upon successful, verified off-chain delivery.
         ///
-        /// # Preconditions:
-        /// - Target commitment MUST exist and have a status of `CommitmentStatus::Active`.
-        /// - Current block height MUST be strictly less than `expires_at` (expiry prevention).
-        /// - The registered consumer DID MUST match the provided `consumer_did`.
-        /// - The caller MUST be the authorized controller of the `consumer_did`.
-        /// - `final_stream_hash` MUST exactly equal the registered `vector_hash` (quality gate).
+        /// Invariants: Callable by consumer controller. Stream hash must
+        /// exactly match the registered committed hash.
         #[pallet::call_index(2)]
         #[pallet::weight(T::WeightInfo::close_commitment())]
         pub fn close_commitment(
@@ -504,14 +496,10 @@ pub mod pallet {
             Ok(())
         }
 
-        /// Open an on-chain dispute when the terminal stream hash differs from the committed hash.
+        /// Opens an on-chain dispute on cryptographic hash mismatch.
         ///
-        /// # Preconditions:
-        /// - Target commitment MUST exist and have a status of `CommitmentStatus::Active`.
-        /// - The registered consumer DID MUST match the provided `consumer_did`.
-        /// - Caller MUST be the authorized controller of the `consumer_did`.
-        /// - `received_hash` MUST NOT equal the registered `vector_hash`.
-        /// - No dispute record MUST already exist for this commitment.
+        /// Invariants: Callable by consumer controller. Received hash must
+        /// differ from the committed hash. Only one dispute allowed per deal.
         #[pallet::call_index(3)]
         #[pallet::weight(T::WeightInfo::raise_dispute())]
         pub fn raise_dispute(
@@ -588,13 +576,10 @@ pub mod pallet {
             Ok(())
         }
 
-        /// Refutes an open dispute by submitting the raw vector preimage within the dispute window.
+        /// Refutes an open dispute by submitting the raw vector preimage.
         ///
-        /// # Preconditions:
-        /// - Target commitment MUST exist and have a status of `CommitmentStatus::Disputed`.
-        /// - Caller MUST be the authorized controller of the `provider_did`.
-        /// - Current block height MUST be less than or equal to `dispute.counter_deadline`.
-        /// - `blake2_256(vector_preimage)` MUST exactly equal `dispute.committed_hash`.
+        /// Invariants: Callable by provider controller before the deadline.
+        /// Submitted preimage hash must match the committed hash.
         #[pallet::call_index(4)]
         #[pallet::weight(T::WeightInfo::counter_dispute())]
         pub fn counter_dispute(
@@ -651,6 +636,58 @@ pub mod pallet {
             });
             Ok(())
         }
+
+        /// Finalizes an open dispute after the counter deadline has expired.
+        ///
+        /// Permissionless. Transitions status to resolved with a guilty verdict.
+        /// Emits `DisputeFinalized` for external slashes/suspensions.
+        #[pallet::call_index(5)]
+        #[pallet::weight(T::WeightInfo::finalize_dispute())]
+        pub fn finalize_dispute(
+            origin: OriginFor<T>,
+            commitment_id: CommitmentId,
+        ) -> DispatchResult {
+            ensure_signed(origin)?;
+
+            // 1. Fetch record and verify Disputed state precondition
+            let mut commitment =
+                VectorCommitments::<T>::get(commitment_id).ok_or(Error::<T>::CommitmentNotFound)?;
+
+            ensure!(
+                commitment.status == CommitmentStatus::Disputed,
+                Error::<T>::NotDisputed
+            );
+
+            // 2. Verify temporal boundary: execution must occur after the counter deadline block
+            let current_block = <frame_system::Pallet<T>>::block_number();
+            let mut dispute =
+                DisputeRecords::<T>::get(commitment_id).ok_or(Error::<T>::CommitmentNotFound)?;
+            ensure!(
+                current_block > dispute.counter_deadline,
+                Error::<T>::DisputeWindowStillOpen
+            );
+
+            // 3. Cache identities prior to storage mutations
+            let provider = commitment.provider;
+            let consumer = commitment.consumer;
+
+            // 4. Record ProviderGuilty verdict, update status to DisputeResolved, and decrement tracking count
+            let verdict = DisputeVerdict::ProviderGuilty;
+            dispute.verdict = Some(verdict);
+            DisputeRecords::<T>::insert(commitment_id, dispute);
+
+            commitment.status = CommitmentStatus::DisputeResolved;
+            VectorCommitments::<T>::insert(commitment_id, commitment);
+            ActiveCommitmentCount::<T>::mutate(|n| *n = n.saturating_sub(1));
+
+            Self::deposit_event(Event::DisputeFinalized {
+                commitment_id,
+                verdict,
+                provider,
+                consumer,
+            });
+            Ok(())
+        }
     }
 }
 
@@ -658,16 +695,12 @@ pub mod pallet {
 
 /// Weight trait definition for the dispatchable methods of `pallet-vector-db`.
 pub trait WeightInfo {
-    /// Evaluates execution weight for the `register_commitment` extrinsic.
     fn register_commitment() -> Weight;
-    /// Evaluates execution weight for the `acknowledge_commitment` extrinsic.
     fn acknowledge_commitment() -> Weight;
-    /// Evaluates execution weight for the `close_commitment` extrinsic.
     fn close_commitment() -> Weight;
-    /// Evaluates execution weight for the `raise_dispute` extrinsic.
     fn raise_dispute() -> Weight;
-    /// Evaluates execution weight for the `counter_dispute` extrinsic.
     fn counter_dispute() -> Weight;
+    fn finalize_dispute() -> Weight;
 }
 
 impl WeightInfo for () {
@@ -689,5 +722,9 @@ impl WeightInfo for () {
     /// Evaluates estimated execution weight for the `counter_dispute` extrinsic.
     fn counter_dispute() -> Weight {
         Weight::from_parts(405_010_000, 0)
+    }
+    /// Evaluates estimated execution weight for the `finalize_dispute` extrinsic.
+    fn finalize_dispute() -> Weight {
+        Weight::from_parts(350_006_000, 0)
     }
 }
