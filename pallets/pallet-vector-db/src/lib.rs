@@ -8,9 +8,10 @@
 use frame_support::weights::Weight;
 pub use pallet::*;
 
-// STANDBY: Test modules temporarily decoupled for standalone workspace compilation.
-// #[cfg(test)]
-// mod mock;
+#[cfg(test)]
+mod mock;
+
+// NOTE: rests module remains commented out until tests.rs is created
 // #[cfg(test)]
 // mod tests;
 
