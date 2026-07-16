@@ -11,9 +11,8 @@ pub use pallet::*;
 #[cfg(test)]
 mod mock;
 
-// NOTE: rests module remains commented out until tests.rs is created
-// #[cfg(test)]
-// mod tests;
+#[cfg(test)]
+mod tests;
 
 // ── Cross-Pallet Interface ───────────────────────────────────────────────────
 
