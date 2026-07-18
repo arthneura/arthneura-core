@@ -18,7 +18,7 @@ sp-runtime = { workspace = true, default-features = false }
 sp-io = { workspace = true, default-features = false }
 sp-std = { workspace = true, default-features = false }
 
-# Production-grade Merkle Tree library (Clean standalone no_std import)
+# Production-grade Merkle Tree library
 rs_merkle = { version = "1.4", default-features = false }
 
 frame-benchmarking = { workspace = true, default-features = false, optional = true }
