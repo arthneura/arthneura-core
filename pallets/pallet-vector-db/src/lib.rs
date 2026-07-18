@@ -1,7 +1,8 @@
 //! # Pallet Vector DB
 //!
-//! On-chain commitment registry and transactional dispute adjudicator.
-//! Anchors cryptographic vector hashes to facilitate secure, off-chain data streaming.
+//! On-chain Merkle Root commitment registry and transactional dispute adjudicator.
+//! Anchors cryptographic Merkle roots to facilitate secure, scalable off-chain data streaming
+//! between AI agents. Disputes are resolved via chunk-level Merkle inclusion proofs.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -14,17 +15,44 @@ mod mock;
 #[cfg(test)]
 mod tests;
 
+// ── Custom Cryptographic Hasher ──────────────────────────────────────────────
+
+/// Custom Blake2b Hasher implementing rs_merkle::Hasher natively.
+///
+/// This decouples the on-chain WASM runtime from rs_merkle's std-only hashing libraries,
+/// utilizing Substrate's highly optimized sp_io::hashing::blake2_256 directly in no_std.
+#[derive(Clone)]
+pub struct Blake2bHasher;
+
+impl rs_merkle::Hasher for Blake2bHasher {
+    type Hash = [u8; 32];
+
+    fn hash(data: &[u8]) -> Self::Hash {
+        sp_io::hashing::blake2_256(data)
+    }
+
+    /// Reconstructs sibling node hashes using stack-allocated buffer (no heap allocation).
+    fn concat_and_hash(left: &Self::Hash, right: Option<&Self::Hash>) -> Self::Hash {
+        match right {
+            Some(r) => {
+                let mut buf = [0u8; 64];
+                buf[..32].copy_from_slice(left);
+                buf[32..].copy_from_slice(r);
+                sp_io::hashing::blake2_256(&buf)
+            }
+            None => *left,
+        }
+    }
+}
+
 // ── Cross-Pallet Interface ───────────────────────────────────────────────────
 
 /// Interface for validating off-pallet agent registration and verification states.
 pub trait AgentLookup<AccountId> {
-    /// Resolves the controller account for a given DID.
     fn controller_of(did: &[u8; 32]) -> Option<AccountId>;
-    /// Validates that an agent is active and holds a verified identity state.
     fn is_active_verified(did: &[u8; 32]) -> bool;
 }
 
-/// Blanket no-op implementation for tests/dependency isolation.
 impl<AccountId> AgentLookup<AccountId> for () {
     fn controller_of(_did: &[u8; 32]) -> Option<AccountId> {
         None
@@ -38,28 +66,27 @@ impl<AccountId> AgentLookup<AccountId> for () {
 
 #[frame_support::pallet]
 pub mod pallet {
-    use crate::{AgentLookup, WeightInfo};
+    use crate::{AgentLookup, Blake2bHasher, WeightInfo};
     use frame_support::traits::Get;
     use frame_support::{pallet_prelude::*, sp_runtime::Saturating};
     use frame_system::pallet_prelude::*;
+    use rs_merkle::MerkleProof;
 
     // -- Constants ------------------------------------------------------------
 
-    /// Max bytes allowed for commitment metadata payload.
     pub const MAX_METADATA_LEN: u32 = 256;
-
-    /// Max bytes allowed for raw vector preimage verification.
-    pub const MAX_PREIMAGE_LEN: u32 = 4096;
+    pub const MAX_CHUNK_LEN: u32 = 1024;
+    pub const MAX_PROOF_DEPTH: u32 = 32;
 
     // -- Core Type Aliases ----------------------------------------------------
 
     pub type Did = [u8; 32];
-    pub type VectorHash = [u8; 32];
+    pub type MerkleRoot = [u8; 32];
+    pub type ChunkIndex = u64;
     pub type CommitmentId = [u8; 32];
 
     // -- Commitment Status ----------------------------------------------------
 
-    /// Lifecycle states of an active on-chain vector commitment.
     #[derive(
         Clone,
         Copy,
@@ -74,24 +101,17 @@ pub mod pallet {
         Default,
     )]
     pub enum CommitmentStatus {
-        /// Provider anchored commitment; awaiting consumer acknowledgment.
         #[default]
         Pending,
-        /// Consumer acknowledged; off-chain streaming authorized to begin.
         Active,
-        /// Execution verified; clean cryptographic settlement achieved. Terminal.
         Settled,
-        /// Hash mismatch reported; dispute response window is open. Active.
         Disputed,
-        /// Dispute adjudicated and finalized. Terminal.
         DisputeResolved,
-        /// Commitment lifespan exceeded without settlement or dispute. Terminal.
         Expired,
     }
 
     // -- Vector Commitment Structure ------------------------------------------
 
-    /// Structural definition of an anchored vector hash commitment.
     #[derive(
         Clone,
         PartialEq,
@@ -108,7 +128,8 @@ pub mod pallet {
         pub commitment_id: CommitmentId,
         pub provider: Did,
         pub consumer: Did,
-        pub vector_hash: VectorHash,
+        pub merkle_root: MerkleRoot,
+        pub total_chunks: u64,
         pub metadata: BoundedVec<u8, ConstU32<MAX_METADATA_LEN>>,
         pub status: CommitmentStatus,
         pub created_at: BlockNumberFor<T>,
@@ -118,7 +139,6 @@ pub mod pallet {
 
     // -- Stream Receipt Structure ---------------------------------------------
 
-    /// Immutable cryptographic evidence submitted at stream completion.
     #[derive(
         Clone,
         PartialEq,
@@ -133,14 +153,13 @@ pub mod pallet {
     #[scale_info(skip_type_params(T))]
     pub struct StreamReceipt<T: Config> {
         pub commitment_id: CommitmentId,
-        pub final_stream_hash: VectorHash,
+        pub final_stream_hash: MerkleRoot,
         pub chunk_count: u64,
         pub submitted_at: BlockNumberFor<T>,
     }
 
     // -- Dispute Verdict ------------------------------------------------------
 
-    /// Core outcome of the dispute adjudication phase.
     #[derive(
         Clone,
         Copy,
@@ -154,15 +173,12 @@ pub mod pallet {
         RuntimeDebug,
     )]
     pub enum DisputeVerdict {
-        /// Provider failed to submit a valid counter-proof within the dispute window.
         ProviderGuilty,
-        /// Provider submitted a valid preimage; `blake2_256(preimage) == committed_hash`.
         ClaimantUnsubstantiated,
     }
 
     // -- Dispute Record Structure ---------------------------------------------
 
-    /// Evidence record created on hash mismatch, facilitating counter-proof claims.
     #[derive(
         Clone,
         PartialEq,
@@ -177,8 +193,8 @@ pub mod pallet {
     #[scale_info(skip_type_params(T))]
     pub struct DisputeRecord<T: Config> {
         pub commitment_id: CommitmentId,
-        pub committed_hash: VectorHash,
-        pub received_hash: VectorHash,
+        pub merkle_root: MerkleRoot,
+        pub received_chunk_hash: [u8; 32],
         pub raised_at: BlockNumberFor<T>,
         pub counter_deadline: BlockNumberFor<T>,
         pub verdict: Option<DisputeVerdict>,
@@ -234,7 +250,8 @@ pub mod pallet {
             commitment_id: CommitmentId,
             provider: Did,
             consumer: Did,
-            vector_hash: VectorHash,
+            merkle_root: MerkleRoot,
+            total_chunks: u64,
             expires_at: BlockNumberFor<T>,
         },
         CommitmentAcknowledged {
@@ -243,13 +260,13 @@ pub mod pallet {
         },
         CommitmentSettled {
             commitment_id: CommitmentId,
-            final_stream_hash: VectorHash,
+            final_stream_hash: MerkleRoot,
             chunk_count: u64,
         },
         DisputeRaised {
             commitment_id: CommitmentId,
-            committed_hash: VectorHash,
-            received_hash: VectorHash,
+            merkle_root: MerkleRoot,
+            received_chunk_hash: [u8; 32],
             counter_deadline: BlockNumberFor<T>,
         },
         DisputeCountered {
@@ -262,8 +279,9 @@ pub mod pallet {
             provider: Did,
             consumer: Did,
         },
-        /// Commitment passed `expires_at` without settlement or dispute.
-        CommitmentExpired { commitment_id: CommitmentId },
+        CommitmentExpired {
+            commitment_id: CommitmentId,
+        },
     }
 
     // -- Errors ---------------------------------------------------------------
@@ -285,19 +303,21 @@ pub mod pallet {
         NotDisputed,
         AlreadyFinalized,
         StreamHashMismatch,
-        StreamHashMatches,
+        InvalidMerkleProof,
         DisputeAlreadyRaised,
         DisputeWindowStillOpen,
         DisputeWindowExpired,
-        InvalidCounterProof,
         NotYetExpired,
+        TotalChunksMustBePositive,
+        InvalidMerkleRoot,
+        ChunkIndexOutOfBounds,
     }
 
     // -- Dispatchables (Extrinsics) -------------------------------------------
 
     #[pallet::call]
     impl<T: Config> Pallet<T> {
-        /// Anchors a provider's data-quality commitment hash on-chain.
+        /// Anchors a provider's data-quality Merkle root commitment on-chain.
         ///
         /// Invariants: Provider/consumer DIDs must be active and verified.
         /// Expiry block must be within limits. Commitment ID must be unique.
@@ -307,7 +327,8 @@ pub mod pallet {
             origin: OriginFor<T>,
             provider_did: Did,
             consumer_did: Did,
-            vector_hash: VectorHash,
+            merkle_root: MerkleRoot,
+            total_chunks: u64,
             metadata: BoundedVec<u8, ConstU32<MAX_METADATA_LEN>>,
             expires_in_blocks: BlockNumberFor<T>,
         ) -> DispatchResult {
@@ -315,8 +336,10 @@ pub mod pallet {
 
             // 1. Prevent self-trades
             ensure!(provider_did != consumer_did, Error::<T>::SelfTrade);
+            ensure!(total_chunks > 0, Error::<T>::TotalChunksMustBePositive);
+            ensure!(merkle_root != [0u8; 32], Error::<T>::InvalidMerkleRoot);
 
-            // 2. Authorize provider controller
+            // 2. Validate provider controller bounds
             let provider_controller = T::AgentRegistry::controller_of(&provider_did)
                 .ok_or(Error::<T>::ProviderNotEligible)?;
             ensure!(provider_controller == caller, Error::<T>::NotProvider);
@@ -331,10 +354,10 @@ pub mod pallet {
                 Error::<T>::ConsumerNotEligible
             );
 
-            // 4. Calculate expiration block height
+            // 4. Validate and calculate block-based expiration bounds
             let current_block = <frame_system::Pallet<T>>::block_number();
             ensure!(
-                expires_in_blocks > BlockNumberFor::<T>::from(0u32),
+                expires_in_blocks > 0u32.into(),
                 Error::<T>::ExpiryMustBePositive
             );
             ensure!(
@@ -348,7 +371,7 @@ pub mod pallet {
                 let mut preimage = b"ArthNeura-Vector-v1".to_vec();
                 preimage.extend_from_slice(&provider_did);
                 preimage.extend_from_slice(&consumer_did);
-                preimage.extend_from_slice(&vector_hash);
+                preimage.extend_from_slice(&merkle_root);
                 preimage.extend_from_slice(&current_block.encode());
                 sp_io::hashing::blake2_256(&preimage)
             };
@@ -363,13 +386,15 @@ pub mod pallet {
                 commitment_id,
                 provider: provider_did,
                 consumer: consumer_did,
-                vector_hash,
+                merkle_root,
+                total_chunks,
                 metadata,
                 status: CommitmentStatus::Pending,
                 created_at: current_block,
                 expires_at,
                 acknowledged_at: None,
             };
+
             VectorCommitments::<T>::insert(commitment_id, commitment);
             ActiveCommitmentCount::<T>::mutate(|n| *n = n.saturating_add(1));
 
@@ -377,7 +402,8 @@ pub mod pallet {
                 commitment_id,
                 provider: provider_did,
                 consumer: consumer_did,
-                vector_hash,
+                merkle_root,
+                total_chunks,
                 expires_at,
             });
             Ok(())
@@ -395,8 +421,6 @@ pub mod pallet {
             consumer_did: Did,
         ) -> DispatchResult {
             let caller = ensure_signed(origin)?;
-
-            // 1. Fetch record and verify Pending state precondition
             let mut commitment =
                 VectorCommitments::<T>::get(commitment_id).ok_or(Error::<T>::CommitmentNotFound)?;
 
@@ -405,26 +429,21 @@ pub mod pallet {
                 Error::<T>::NotPending
             );
 
-            // 2. Reject if execution block meets or exceeds expiration block
             let current_block = <frame_system::Pallet<T>>::block_number();
             ensure!(
                 current_block < commitment.expires_at,
                 Error::<T>::CommitmentExpiredError
             );
 
-            // 3. Authenticate consumer origin parameters
             ensure!(commitment.consumer == consumer_did, Error::<T>::NotConsumer);
             let consumer_controller = T::AgentRegistry::controller_of(&consumer_did)
                 .ok_or(Error::<T>::ConsumerNotEligible)?;
             ensure!(consumer_controller == caller, Error::<T>::NotConsumer);
-
-            // 4. Validate consumer identity eligibility
             ensure!(
                 T::AgentRegistry::is_active_verified(&consumer_did),
                 Error::<T>::ConsumerNotEligible
             );
 
-            // 5. Commit state transition to Active and record block height
             commitment.status = CommitmentStatus::Active;
             commitment.acknowledged_at = Some(current_block);
             VectorCommitments::<T>::insert(commitment_id, commitment);
@@ -436,22 +455,20 @@ pub mod pallet {
             Ok(())
         }
 
-        /// Settles an active commitment upon successful, verified off-chain delivery.
+        /// Settles an active commitment upon successful, verified off-chain data delivery.
         ///
         /// Invariants: Callable by consumer controller. Stream hash must
-        /// exactly match the registered committed hash.
+        /// exactly match the registered committed Merkle root.
         #[pallet::call_index(2)]
         #[pallet::weight(T::WeightInfo::close_commitment())]
         pub fn close_commitment(
             origin: OriginFor<T>,
             commitment_id: CommitmentId,
             consumer_did: Did,
-            final_stream_hash: VectorHash,
+            final_stream_hash: MerkleRoot,
             chunk_count: u64,
         ) -> DispatchResult {
             let caller = ensure_signed(origin)?;
-
-            // 1. Fetch record and verify Active state precondition
             let mut commitment =
                 VectorCommitments::<T>::get(commitment_id).ok_or(Error::<T>::CommitmentNotFound)?;
 
@@ -460,33 +477,31 @@ pub mod pallet {
                 Error::<T>::NotActive
             );
 
-            // 2. Verify temporal bounds
             let current_block = <frame_system::Pallet<T>>::block_number();
             ensure!(
                 current_block < commitment.expires_at,
                 Error::<T>::CommitmentExpiredError
             );
 
-            // 3. Authenticate consumer origin parameters
             ensure!(commitment.consumer == consumer_did, Error::<T>::NotConsumer);
             let consumer_controller = T::AgentRegistry::controller_of(&consumer_did)
                 .ok_or(Error::<T>::ConsumerNotEligible)?;
             ensure!(consumer_controller == caller, Error::<T>::NotConsumer);
 
-            // 4. Enforce cryptographic matching between stream and commitment
             ensure!(
-                final_stream_hash == commitment.vector_hash,
+                final_stream_hash == commitment.merkle_root,
                 Error::<T>::StreamHashMismatch
             );
 
-            // 5. Persist final receipt, set status to Settled, and decrement tracking count
-            let receipt = StreamReceipt::<T> {
+            StreamReceipts::<T>::insert(
                 commitment_id,
-                final_stream_hash,
-                chunk_count,
-                submitted_at: current_block,
-            };
-            StreamReceipts::<T>::insert(commitment_id, receipt);
+                StreamReceipt::<T> {
+                    commitment_id,
+                    final_stream_hash,
+                    chunk_count,
+                    submitted_at: current_block,
+                },
+            );
 
             commitment.status = CommitmentStatus::Settled;
             VectorCommitments::<T>::insert(commitment_id, commitment);
@@ -502,20 +517,18 @@ pub mod pallet {
 
         /// Opens an on-chain dispute on cryptographic hash mismatch.
         ///
-        /// Invariants: Callable by consumer controller. Received hash must
-        /// differ from the committed hash. Only one dispute allowed per deal.
+        /// Invariants: Callable by consumer controller. Received chunk hash
+        /// represents the corrupted leaf on-chain.
         #[pallet::call_index(3)]
         #[pallet::weight(T::WeightInfo::raise_dispute())]
         pub fn raise_dispute(
             origin: OriginFor<T>,
             commitment_id: CommitmentId,
             consumer_did: Did,
-            received_hash: VectorHash,
+            received_chunk_hash: [u8; 32],
             chunk_count: u64,
         ) -> DispatchResult {
             let caller = ensure_signed(origin)?;
-
-            // 1. Fetch record and verify Active state precondition
             let mut commitment =
                 VectorCommitments::<T>::get(commitment_id).ok_or(Error::<T>::CommitmentNotFound)?;
 
@@ -523,78 +536,72 @@ pub mod pallet {
                 commitment.status == CommitmentStatus::Active,
                 Error::<T>::NotActive
             );
+            ensure!(commitment.consumer == consumer_did, Error::<T>::NotConsumer);
 
             // 2. Authenticate consumer origin parameters
-            ensure!(commitment.consumer == consumer_did, Error::<T>::NotConsumer);
             let consumer_controller = T::AgentRegistry::controller_of(&consumer_did)
                 .ok_or(Error::<T>::ConsumerNotEligible)?;
             ensure!(consumer_controller == caller, Error::<T>::NotConsumer);
-
-            // 3. Reject if received hash matches committed hash (use close_commitment)
-            ensure!(
-                received_hash != commitment.vector_hash,
-                Error::<T>::StreamHashMatches
-            );
-
-            // 4. Enforce single-dispute invariant
             ensure!(
                 !DisputeRecords::<T>::contains_key(commitment_id),
                 Error::<T>::DisputeAlreadyRaised
             );
 
-            // 5. Clone parameters prior to storage mutations
-            let committed_hash = commitment.vector_hash;
+            // 3. Initialize dispute record with provider response deadline
             let current_block = <frame_system::Pallet<T>>::block_number();
-
-            // 6. Record stream receipt as immutable dispute evidence
-            let receipt = StreamReceipt::<T> {
-                commitment_id,
-                final_stream_hash: received_hash,
-                chunk_count,
-                submitted_at: current_block,
-            };
-            StreamReceipts::<T>::insert(commitment_id, receipt);
-
-            // 7. Initialize dispute record with provider response deadline
             let counter_deadline = current_block.saturating_add(T::DisputeWindow::get());
-            let dispute = DisputeRecord::<T> {
-                commitment_id,
-                committed_hash,
-                received_hash,
-                raised_at: current_block,
-                counter_deadline,
-                verdict: None,
-            };
-            DisputeRecords::<T>::insert(commitment_id, dispute);
 
-            // 8. Transition commitment status to Disputed
+            StreamReceipts::<T>::insert(
+                commitment_id,
+                StreamReceipt::<T> {
+                    commitment_id,
+                    final_stream_hash: received_chunk_hash,
+                    chunk_count,
+                    submitted_at: current_block,
+                },
+            );
+
+            DisputeRecords::<T>::insert(
+                commitment_id,
+                DisputeRecord::<T> {
+                    commitment_id,
+                    merkle_root: commitment.merkle_root,
+                    received_chunk_hash,
+                    raised_at: current_block,
+                    counter_deadline,
+                    verdict: None,
+                },
+            );
+
+            // 4. Transition commitment status to Disputed
+            let merkle_root = commitment.merkle_root; // Copy before move
             commitment.status = CommitmentStatus::Disputed;
             VectorCommitments::<T>::insert(commitment_id, commitment);
 
             Self::deposit_event(Event::DisputeRaised {
                 commitment_id,
-                committed_hash,
-                received_hash,
+                merkle_root, // Use copy variable (Resolved E0382)
+                received_chunk_hash,
                 counter_deadline,
             });
             Ok(())
         }
 
-        /// Refutes an open dispute by submitting the raw vector preimage.
+        /// Refutes an open dispute by submitting the raw data chunk and Merkle proof.
         ///
         /// Invariants: Callable by provider controller before the deadline.
-        /// Submitted preimage hash must match the committed hash.
+        /// Merkle proof validation MUST evaluate to true against registered root.
         #[pallet::call_index(4)]
         #[pallet::weight(T::WeightInfo::counter_dispute())]
         pub fn counter_dispute(
             origin: OriginFor<T>,
             commitment_id: CommitmentId,
             provider_did: Did,
-            vector_preimage: BoundedVec<u8, ConstU32<MAX_PREIMAGE_LEN>>,
+            chunk_index: ChunkIndex,
+            chunk_data: BoundedVec<u8, ConstU32<MAX_CHUNK_LEN>>,
+            merkle_proof: BoundedVec<[u8; 32], ConstU32<MAX_PROOF_DEPTH>>,
         ) -> DispatchResult {
             let caller = ensure_signed(origin)?;
-
-            // 1. Fetch record and verify Disputed state precondition
             let mut commitment =
                 VectorCommitments::<T>::get(commitment_id).ok_or(Error::<T>::CommitmentNotFound)?;
 
@@ -602,9 +609,9 @@ pub mod pallet {
                 commitment.status == CommitmentStatus::Disputed,
                 Error::<T>::NotDisputed
             );
+            ensure!(commitment.provider == provider_did, Error::<T>::NotProvider);
 
             // 2. Authenticate provider origin parameters
-            ensure!(commitment.provider == provider_did, Error::<T>::NotProvider);
             let provider_controller = T::AgentRegistry::controller_of(&provider_did)
                 .ok_or(Error::<T>::ProviderNotEligible)?;
             ensure!(provider_controller == caller, Error::<T>::NotProvider);
@@ -617,15 +624,28 @@ pub mod pallet {
                 current_block <= dispute.counter_deadline,
                 Error::<T>::DisputeWindowExpired
             );
-
-            // 4. Cryptographic validation of the submitted preimage
-            let preimage_hash: VectorHash = sp_io::hashing::blake2_256(&vector_preimage);
             ensure!(
-                preimage_hash == dispute.committed_hash,
-                Error::<T>::InvalidCounterProof
+                chunk_index < commitment.total_chunks,
+                Error::<T>::ChunkIndexOutOfBounds
             );
 
-            // 5. Persist the verdict, update status to DisputeResolved, and decrement tracking count
+            // 4. Verify cryptographic Merkle proof on-chain
+            let leaf_hash = sp_io::hashing::blake2_256(&chunk_data);
+
+            // rs-merkle with Blake2bHasher
+            let proof = MerkleProof::<Blake2bHasher>::new(merkle_proof.into_inner());
+
+            // 5. Verify and resolve (Resolved E0308: Swapped parameters and removed reference borrow on root)
+            ensure!(
+                proof.verify(
+                    commitment.merkle_root, // Removed `&` borrow here (Resolved E0308)
+                    &[chunk_index as usize],
+                    &[leaf_hash],
+                    commitment.total_chunks as usize
+                ),
+                Error::<T>::InvalidMerkleProof
+            );
+
             let verdict = DisputeVerdict::ClaimantUnsubstantiated;
             dispute.verdict = Some(verdict);
             DisputeRecords::<T>::insert(commitment_id, dispute);
@@ -656,7 +676,6 @@ pub mod pallet {
             // 1. Fetch record and verify Disputed state precondition
             let mut commitment =
                 VectorCommitments::<T>::get(commitment_id).ok_or(Error::<T>::CommitmentNotFound)?;
-
             ensure!(
                 commitment.status == CommitmentStatus::Disputed,
                 Error::<T>::NotDisputed
@@ -705,10 +724,10 @@ pub mod pallet {
         ) -> DispatchResult {
             ensure_signed(origin)?;
 
+            // 1. Fetch record and verify Pending/Active state preconditions
             let commitment =
                 VectorCommitments::<T>::get(commitment_id).ok_or(Error::<T>::CommitmentNotFound)?;
 
-            // 1. Only live states are expirable; terminal states are immutable.
             ensure!(
                 matches!(
                     commitment.status,
@@ -717,7 +736,7 @@ pub mod pallet {
                 Error::<T>::AlreadyFinalized
             );
 
-            // 2. Current block must have reached or passed expires_at
+            // 2. Verify current block exceeds expiration block
             let current_block = <frame_system::Pallet<T>>::block_number();
             ensure!(
                 current_block >= commitment.expires_at,
@@ -736,7 +755,6 @@ pub mod pallet {
 
 // ── Weight Definitions ───────────────────────────────────────────────────────
 
-/// Weight trait definition for the dispatchable methods of `pallet-vector-db`.
 pub trait WeightInfo {
     fn register_commitment() -> Weight;
     fn acknowledge_commitment() -> Weight;
@@ -749,30 +767,24 @@ pub trait WeightInfo {
 
 impl WeightInfo for () {
     fn register_commitment() -> Weight {
-        Weight::default()
+        Weight::from_parts(175_000_000, 0)
     }
-    /// Evaluates estimated execution weight for the `acknowledge_commitment` extrinsic.
     fn acknowledge_commitment() -> Weight {
         Weight::from_parts(150_006_000, 0)
     }
-    /// Evaluates estimated execution weight for the `close_commitment` extrinsic.
     fn close_commitment() -> Weight {
-        Weight::from_parts(350_006_000, 0)
+        Weight::from_parts(250_006_000, 0)
     }
-    /// Evaluates estimated execution weight for the `raise_dispute` extrinsic.
     fn raise_dispute() -> Weight {
-        Weight::from_parts(375_008_000, 0)
+        Weight::from_parts(300_008_000, 0)
     }
-    /// Evaluates estimated execution weight for the `counter_dispute` extrinsic.
     fn counter_dispute() -> Weight {
-        Weight::from_parts(405_010_000, 0)
+        Weight::from_parts(500_034_000, 0)
     }
-    /// Evaluates estimated execution weight for the `finalize_dispute` extrinsic.
     fn finalize_dispute() -> Weight {
-        Weight::from_parts(350_006_000, 0)
+        Weight::from_parts(250_006_000, 0)
     }
-    /// Evaluates estimated execution weight for the `expire_commitment` extrinsic.
     fn expire_commitment() -> Weight {
-        Weight::from_parts(225_004_000, 0)
+        Weight::from_parts(175_004_000, 0)
     }
 }

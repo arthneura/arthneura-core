@@ -1,7 +1,7 @@
 [package]
 name = "pallet-vector-db"
 version = "0.1.0"
-description = "ArthNeura Vector Commitment Registry and Dispute Adjudicator"
+description = "ArthNeura Vector Commitment Registry and Dispute Adjudicator with Merkle Tree support"
 authors = ["ArthNeura Core Team"]
 edition = "2021"
 license = "Apache-2.0"
@@ -16,6 +16,11 @@ frame-support = { workspace = true, default-features = false }
 frame-system = { workspace = true, default-features = false }
 sp-runtime = { workspace = true, default-features = false }
 sp-io = { workspace = true, default-features = false }
+sp-std = { workspace = true, default-features = false }
+
+# Production-grade Merkle Tree library (Clean standalone no_std import)
+rs_merkle = { version = "1.4", default-features = false }
+
 frame-benchmarking = { workspace = true, default-features = false, optional = true }
 
 [dev-dependencies]
@@ -31,6 +36,8 @@ std = [
     "frame-system/std",
     "sp-runtime/std",
     "sp-io/std",
+    "sp-std/std",
+    "rs_merkle/std",
     "frame-benchmarking?/std",
     "pallet-balances/std",
 ]
