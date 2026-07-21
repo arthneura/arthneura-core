@@ -4,7 +4,7 @@
 //! registry, removing compile-time dependencies on `pallet-agent-registry`.
 
 use crate as pallet_vector_db;
-use crate::pallet::{CommitmentId, VectorHash, MAX_METADATA_LEN, MAX_PREIMAGE_LEN};
+use crate::pallet::{CommitmentId, MerkleRoot, MAX_METADATA_LEN};
 use codec::Encode;
 use frame_support::{derive_impl, parameter_types, BoundedVec};
 use sp_runtime::BuildStorage;
@@ -99,14 +99,9 @@ pub fn test_did(n: u8) -> [u8; 32] {
     did
 }
 
-/// Generates a deterministic `VectorHash` for index `n` via `blake2_256([n; 64])`.
-pub fn test_vector_hash(n: u8) -> VectorHash {
+/// Generates a deterministic `MerkleRoot` for index `n` via `blake2_256([n; 64])`.
+pub fn test_vector_hash(n: u8) -> MerkleRoot {
     sp_io::hashing::blake2_256(&[n; 64])
-}
-
-/// Generates a 64-byte preimage satisfying `blake2_256(preimage) == test_vector_hash(n)`.
-pub fn test_preimage(n: u8) -> BoundedVec<u8, frame_support::traits::ConstU32<MAX_PREIMAGE_LEN>> {
-    BoundedVec::try_from([n; 64].to_vec()).expect("64 bytes is within MAX_PREIMAGE_LEN (4096)")
 }
 
 /// Generates a static dummy metadata vector for testing bounds.
@@ -118,7 +113,7 @@ pub fn metadata() -> BoundedVec<u8, frame_support::traits::ConstU32<MAX_METADATA
 pub fn derive_commitment_id(
     provider: [u8; 32],
     consumer: [u8; 32],
-    vector_hash: VectorHash,
+    vector_hash: MerkleRoot,
     created_at_block: u64,
 ) -> CommitmentId {
     let mut preimage = b"ArthNeura-Vector-v1".to_vec();

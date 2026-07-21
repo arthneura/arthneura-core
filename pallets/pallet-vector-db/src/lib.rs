@@ -526,7 +526,7 @@ pub mod pallet {
             commitment_id: CommitmentId,
             consumer_did: Did,
             received_chunk_hash: [u8; 32],
-            chunk_count: u64,
+            _chunk_count: u64,
         ) -> DispatchResult {
             let caller = ensure_signed(origin)?;
             let mut commitment =
@@ -551,16 +551,11 @@ pub mod pallet {
             let current_block = <frame_system::Pallet<T>>::block_number();
             let counter_deadline = current_block.saturating_add(T::DisputeWindow::get());
 
-            StreamReceipts::<T>::insert(
-                commitment_id,
-                StreamReceipt::<T> {
-                    commitment_id,
-                    final_stream_hash: received_chunk_hash,
-                    chunk_count,
-                    submitted_at: current_block,
-                },
-            );
-
+            // NOTE: StreamReceipts is reserved exclusively for verified, successful
+            // closures (see `close_commitment`). An active dispute must never write
+            // a receipt here — doing so would record a corrupt/disputed chunk hash
+            // as if it were a finalized settlement, and since a Disputed commitment
+            // can never return to Active, that corrupt entry would persist forever.
             DisputeRecords::<T>::insert(
                 commitment_id,
                 DisputeRecord::<T> {
