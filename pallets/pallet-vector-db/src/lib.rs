@@ -487,6 +487,10 @@ pub mod pallet {
             let consumer_controller = T::AgentRegistry::controller_of(&consumer_did)
                 .ok_or(Error::<T>::ConsumerNotEligible)?;
             ensure!(consumer_controller == caller, Error::<T>::NotConsumer);
+            ensure!(
+                T::AgentRegistry::is_active_verified(&consumer_did),
+                Error::<T>::ConsumerNotEligible
+            );
 
             ensure!(
                 final_stream_hash == commitment.merkle_root,
@@ -538,17 +542,28 @@ pub mod pallet {
             );
             ensure!(commitment.consumer == consumer_did, Error::<T>::NotConsumer);
 
+            // 1b. Enforce the same expiry boundary as close_commitment — a dispute
+            // must not be raisable against a commitment that has already lapsed.
+            let current_block = <frame_system::Pallet<T>>::block_number();
+            ensure!(
+                current_block < commitment.expires_at,
+                Error::<T>::CommitmentExpiredError
+            );
+
             // 2. Authenticate consumer origin parameters
             let consumer_controller = T::AgentRegistry::controller_of(&consumer_did)
                 .ok_or(Error::<T>::ConsumerNotEligible)?;
             ensure!(consumer_controller == caller, Error::<T>::NotConsumer);
+            ensure!(
+                T::AgentRegistry::is_active_verified(&consumer_did),
+                Error::<T>::ConsumerNotEligible
+            );
             ensure!(
                 !DisputeRecords::<T>::contains_key(commitment_id),
                 Error::<T>::DisputeAlreadyRaised
             );
 
             // 3. Initialize dispute record with provider response deadline
-            let current_block = <frame_system::Pallet<T>>::block_number();
             let counter_deadline = current_block.saturating_add(T::DisputeWindow::get());
 
             // NOTE: StreamReceipts is reserved exclusively for verified, successful
@@ -610,6 +625,10 @@ pub mod pallet {
             let provider_controller = T::AgentRegistry::controller_of(&provider_did)
                 .ok_or(Error::<T>::ProviderNotEligible)?;
             ensure!(provider_controller == caller, Error::<T>::NotProvider);
+            ensure!(
+                T::AgentRegistry::is_active_verified(&provider_did),
+                Error::<T>::ProviderNotEligible
+            );
 
             // 3. Verify execution occurs within the allotted response window
             let current_block = <frame_system::Pallet<T>>::block_number();
