@@ -28,6 +28,7 @@ pallet-grandpa.workspace = true
 pallet-sudo.workspace = true
 pallet-template.workspace = true
 pallet-agent-registry = { workspace = true, default-features = false }
+pallet-vector-db = { workspace = true, default-features = false }
 pallet-timestamp.workspace = true
 pallet-transaction-payment-rpc-runtime-api.workspace = true
 pallet-transaction-payment.workspace = true
@@ -68,6 +69,7 @@ std = [
 	"pallet-grandpa/std",
 	"pallet-sudo/std",
 	"pallet-agent-registry/std",
+        "pallet-vector-db/std",
 	"pallet-template/std",
 	"pallet-timestamp/std",
 	"pallet-transaction-payment-rpc-runtime-api/std",
@@ -99,6 +101,7 @@ runtime-benchmarks = [
 	"pallet-balances/runtime-benchmarks",
 	"pallet-grandpa/runtime-benchmarks",
 	"pallet-agent-registry/runtime-benchmarks",
+        "pallet-vector-db/runtime-benchmarks",
 	"pallet-sudo/runtime-benchmarks",
 	"pallet-template/runtime-benchmarks",
 	"pallet-timestamp/runtime-benchmarks",
@@ -114,6 +117,7 @@ try-runtime = [
 	"pallet-aura/try-runtime",
 	"pallet-balances/try-runtime",
 	"pallet-agent-registry/try-runtime",
+        "pallet-vector-db/try-runtime",
 	"pallet-grandpa/try-runtime",
 	"pallet-sudo/try-runtime",
 	"pallet-template/try-runtime",
