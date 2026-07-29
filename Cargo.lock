@@ -5835,6 +5835,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "offchain-vector-db"
+version = "0.1.0"
+dependencies = [
+ "parity-scale-codec",
+ "rs_merkle",
+ "subxt",
+ "tokio",
+]
+
+[[package]]
 name = "oid-registry"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10676,6 +10686,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
+ "wasm-bindgen-futures",
  "web-time",
 ]
 

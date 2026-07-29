@@ -1,0 +1,12 @@
+[package]
+name = "offchain-vector-db"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+tokio = { version = "1.38", features = ["full"] }
+subxt = { version = "0.38", features = ["native"] }
+codec = { package = "parity-scale-codec", version = "3.7", features = ["derive"] }
+rs_merkle = "1.4"

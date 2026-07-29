@@ -12,6 +12,7 @@ members = [
     "pallets/pallet-agent-registry",
     "pallets/pallet-vector-db",
     "runtime",
+    "offchain-vector-db", # <--- Badlaav: Off-chain module workspace member registered
 ]
 resolver = "2"
 
