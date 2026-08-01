@@ -2,7 +2,7 @@
 
 mod merkle;
 
-use merkle::{build_merkle_tree, Blake2bHasher};
+use merkle::{build_merkle_tree, generate_inclusion_proof, Blake2bHasher};
 use rs_merkle::Hasher;
 use std::fs;
 use std::io;
@@ -23,6 +23,10 @@ const MAX_CHUNK_LEN: usize = 1024;
 /// On-chain metadata bound. Adjust to match `T::MaxMetadataLen` if the
 /// pallet's `Config` trait defines a different constant.
 const MAX_METADATA_LEN: usize = 256;
+
+/// On-chain `MAX_PROOF_DEPTH` from `pallet_vector_db`. Must stay in
+/// lockstep with `BoundedVec<[u8; 32], ConstU32<32>>` on the proof arg.
+const MAX_PROOF_DEPTH: usize = 32;
 
 type Did = [u8; 32];
 type MerkleRoot = [u8; 32];
@@ -174,7 +178,9 @@ async fn register_commitment<S: ChunkStore>(
         .find(|e| e.pallet_name() == PALLET_NAME && e.variant_name() == "CommitmentRegistered")
         .ok_or(RegisterCommitmentError::EventMissing)?;
 
-    let field_values = event_details.field_values().map_err(|_| RegisterCommitmentError::EventMissing)?;
+    let field_values = event_details
+        .field_values()
+        .map_err(|_| RegisterCommitmentError::EventMissing)?;
     let commitment_id: CommitmentId = decode_fixed_bytes_field(&field_values, 0)
         .ok_or(RegisterCommitmentError::EventMissing)?;
 
@@ -219,5 +225,108 @@ fn decode_fixed_bytes_field(
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("ArthNeura Off-Chain Companion Node Initialized.");
+    Ok(())
+}
+
+// -----------------------------------------------------------------------
+// counter_dispute client
+// -----------------------------------------------------------------------
+
+/// Pre-submission and transport errors only. On-chain `Error<T>` variants
+/// (NotDisputed, DisputeWindowExpired, InvalidMerkleProof, etc.) surface
+/// via `subxt::Error` from the dispatch result and are not re-modeled here.
+#[derive(Debug, thiserror::Error)]
+enum CounterDisputeError {
+    #[error("chunk_data exceeds MAX_CHUNK_LEN ({0} > {1})")]
+    ChunkTooLarge(usize, usize),
+    #[error("merkle proof exceeds MAX_PROOF_DEPTH ({0} > {1}); tree too deep for on-chain bound")]
+    ProofTooDeep(usize, usize),
+    #[error("chunk_index {0} out of bounds for total_chunks {1}")]
+    ChunkIndexOutOfBounds(u64, u64),
+    #[error("subxt error: {0}")]
+    Subxt(#[from] subxt::Error),
+    #[error("storage error: {0}")]
+    Storage(#[from] io::Error),
+    #[error("DisputeCountered event not found in finalized block")]
+    EventMissing,
+}
+
+/// Reassembles the full chunk set for `commitment_id` from local storage,
+/// in positional order. Required to rebuild the exact Merkle tree whose
+/// root matches the on-chain `commitment.merkle_root` — a partial or
+/// misordered set produces a structurally different (and useless) tree.
+fn load_all_chunks<S: ChunkStore>(
+    store: &S,
+    commitment_id: CommitmentId,
+    total_chunks: u64,
+) -> io::Result<Vec<Vec<u8>>> {
+    (0..total_chunks).map(|i| store.load_chunk(commitment_id, i)).collect()
+}
+
+/// Refutes an open dispute for `commitment_id` at `chunk_index` by
+/// reloading the original chunk from local storage, rebuilding the
+/// Merkle tree, generating an inclusion proof, and submitting
+/// `counter_dispute`. Fails closed: any bound violation is caught
+/// client-side before submission rather than left for pallet rejection.
+async fn counter_dispute<S: ChunkStore>(
+    client: &OnlineClient<PolkadotConfig>,
+    signer: &(impl Signer<PolkadotConfig> + Send + Sync),
+    store: &S,
+    commitment_id: CommitmentId,
+    provider_did: Did,
+    chunk_index: u64,
+    total_chunks: u64,
+) -> Result<(), CounterDisputeError> {
+    if chunk_index >= total_chunks {
+        return Err(CounterDisputeError::ChunkIndexOutOfBounds(chunk_index, total_chunks));
+    }
+
+    let chunks = load_all_chunks(store, commitment_id, total_chunks)?;
+
+    let target_chunk = chunks[chunk_index as usize].clone();
+    if target_chunk.len() > MAX_CHUNK_LEN {
+        return Err(CounterDisputeError::ChunkTooLarge(target_chunk.len(), MAX_CHUNK_LEN));
+    }
+
+    // Rebuild the tree from the full local chunk set — proof siblings must
+    // come from the same tree whose root was originally committed on-chain.
+    let (_root, tree) = build_merkle_tree(&chunks);
+    let proof_hashes = generate_inclusion_proof(&tree, chunk_index as usize);
+    if proof_hashes.len() > MAX_PROOF_DEPTH {
+        return Err(CounterDisputeError::ProofTooDeep(proof_hashes.len(), MAX_PROOF_DEPTH));
+    }
+
+    // --- subxt dynamic call construction ------------------------------------
+    // Argument order MUST match the on-chain extrinsic signature exactly:
+    // (commitment_id, provider_did, chunk_index, chunk_data, merkle_proof).
+    let tx = subxt::dynamic::tx(
+        PALLET_NAME,
+        "counter_dispute",
+        vec![
+            Value::from_bytes(commitment_id),
+            Value::from_bytes(provider_did),
+            Value::u128(chunk_index as u128),
+            Value::from_bytes(target_chunk),
+            Value::unnamed_composite(proof_hashes.into_iter().map(Value::from_bytes)),
+        ],
+    );
+
+    let events = client
+        .tx()
+        .sign_and_submit_then_watch_default(&tx, signer)
+        .await?
+        .wait_for_finalized_success()
+        .await?;
+
+    // Confirm resolution actually landed — absence here means the tx was
+    // finalized but the pallet did not emit the expected event, which
+    // should never happen on success and warrants surfacing as an error
+    // rather than being silently treated as "probably fine".
+    events
+        .iter()
+        .filter_map(|e| e.ok())
+        .find(|e| e.pallet_name() == PALLET_NAME && e.variant_name() == "DisputeCountered")
+        .ok_or(CounterDisputeError::EventMissing)?;
+
     Ok(())
 }
