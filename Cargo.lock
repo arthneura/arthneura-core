@@ -5838,9 +5838,12 @@ dependencies = [
 name = "offchain-vector-db"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "parity-scale-codec",
  "rs_merkle",
+ "sp-core",
  "subxt",
+ "thiserror 1.0.69",
  "tokio",
 ]
 
