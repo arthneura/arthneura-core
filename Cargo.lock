@@ -5839,6 +5839,7 @@ name = "offchain-vector-db"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "pallet-vector-db",
  "parity-scale-codec",
  "rs_merkle",
  "sp-core",
