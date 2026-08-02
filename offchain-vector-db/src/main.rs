@@ -222,6 +222,106 @@ fn decode_fixed_bytes_field(
     }
 }
 
+// -----------------------------------------------------------------------
+// acknowledge_commitment client
+// -----------------------------------------------------------------------
+
+/// Pre-submission and transport errors only. On-chain `Error<T>` variants
+/// (CommitmentNotFound, NotPending, ConsumerNotEligible, etc.) surface via
+/// `subxt::Error` from the dispatch result and are not re-modeled here.
+#[derive(Debug, thiserror::Error)]
+enum AcknowledgeCommitmentError {
+    #[error("subxt error: {0}")]
+    Subxt(#[from] subxt::Error),
+    #[error("CommitmentAcknowledged event not found in finalized block")]
+    EventMissing,
+}
+
+/// Consumer-side acknowledgement: transitions `commitment_id` from
+/// `Pending` to `Active`. Caller must be the `consumer_did`'s registered
+/// controller — enforced on-chain, not re-validated here.
+async fn acknowledge_commitment(
+    client: &OnlineClient<PolkadotConfig>,
+    signer: &(impl Signer<PolkadotConfig> + Send + Sync),
+    commitment_id: CommitmentId,
+    consumer_did: Did,
+) -> Result<(), AcknowledgeCommitmentError> {
+    let tx = subxt::dynamic::tx(
+        PALLET_NAME,
+        "acknowledge_commitment",
+        vec![Value::from_bytes(commitment_id), Value::from_bytes(consumer_did)],
+    );
+
+    let events = client
+        .tx()
+        .sign_and_submit_then_watch_default(&tx, signer)
+        .await?
+        .wait_for_finalized_success()
+        .await?;
+
+    events
+        .iter()
+        .filter_map(|e| e.ok())
+        .find(|e| e.pallet_name() == PALLET_NAME && e.variant_name() == "CommitmentAcknowledged")
+        .ok_or(AcknowledgeCommitmentError::EventMissing)?;
+
+    Ok(())
+}
+
+// -----------------------------------------------------------------------
+// close_commitment client
+// -----------------------------------------------------------------------
+
+/// Pre-submission and transport errors only. On-chain `Error<T>` variants
+/// (NotActive, StreamHashMismatch, CommitmentExpiredError, etc.) surface
+/// via `subxt::Error` from the dispatch result and are not re-modeled here.
+#[derive(Debug, thiserror::Error)]
+enum CloseCommitmentError {
+    #[error("subxt error: {0}")]
+    Subxt(#[from] subxt::Error),
+    #[error("CommitmentSettled event not found in finalized block")]
+    EventMissing,
+}
+
+/// Consumer-side settlement: submits the final stream hash (must exactly
+/// equal the originally committed `merkle_root`) to close an `Active`
+/// commitment. Mismatch is a pallet-level rejection, not caught here —
+/// this client does not independently recompute the expected hash.
+async fn close_commitment(
+    client: &OnlineClient<PolkadotConfig>,
+    signer: &(impl Signer<PolkadotConfig> + Send + Sync),
+    commitment_id: CommitmentId,
+    consumer_did: Did,
+    final_stream_hash: MerkleRoot,
+    chunk_count: u64,
+) -> Result<(), CloseCommitmentError> {
+    let tx = subxt::dynamic::tx(
+        PALLET_NAME,
+        "close_commitment",
+        vec![
+            Value::from_bytes(commitment_id),
+            Value::from_bytes(consumer_did),
+            Value::from_bytes(final_stream_hash),
+            Value::u128(chunk_count as u128),
+        ],
+    );
+
+    let events = client
+        .tx()
+        .sign_and_submit_then_watch_default(&tx, signer)
+        .await?
+        .wait_for_finalized_success()
+        .await?;
+
+    events
+        .iter()
+        .filter_map(|e| e.ok())
+        .find(|e| e.pallet_name() == PALLET_NAME && e.variant_name() == "CommitmentSettled")
+        .ok_or(CloseCommitmentError::EventMissing)?;
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("ArthNeura Off-Chain Companion Node Initialized.");
