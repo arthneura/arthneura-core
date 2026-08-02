@@ -378,6 +378,91 @@ async fn raise_dispute(
     Ok(())
 }
 
+// -----------------------------------------------------------------------
+// finalize_dispute client
+// -----------------------------------------------------------------------
+
+/// Pre-submission and transport errors only. On-chain `Error<T>` variants
+/// (NotDisputed, DisputeWindowStillOpen, etc.) surface via `subxt::Error`
+/// from the dispatch result and are not re-modeled here.
+#[derive(Debug, thiserror::Error)]
+enum FinalizeDisputeError {
+    #[error("subxt error: {0}")]
+    Subxt(#[from] subxt::Error),
+    #[error("DisputeFinalized event not found in finalized block")]
+    EventMissing,
+}
+
+/// Permissionless: any signed account may finalize a dispute once its
+/// `counter_deadline` has lapsed without a provider response. Always
+/// resolves to `ProviderGuilty` -- there is no alternate verdict path
+/// through this extrinsic (a timely `counter_dispute` prevents reaching
+/// this state at all).
+async fn finalize_dispute(
+    client: &OnlineClient<PolkadotConfig>,
+    signer: &(impl Signer<PolkadotConfig> + Send + Sync),
+    commitment_id: CommitmentId,
+) -> Result<(), FinalizeDisputeError> {
+    let tx = subxt::dynamic::tx(PALLET_NAME, "finalize_dispute", vec![Value::from_bytes(commitment_id)]);
+
+    let events = client
+        .tx()
+        .sign_and_submit_then_watch_default(&tx, signer)
+        .await?
+        .wait_for_finalized_success()
+        .await?;
+
+    events
+        .iter()
+        .filter_map(|e| e.ok())
+        .find(|e| e.pallet_name() == PALLET_NAME && e.variant_name() == "DisputeFinalized")
+        .ok_or(FinalizeDisputeError::EventMissing)?;
+
+    Ok(())
+}
+
+// -----------------------------------------------------------------------
+// expire_commitment client
+// -----------------------------------------------------------------------
+
+/// Pre-submission and transport errors only. On-chain `Error<T>` variants
+/// (AlreadyFinalized, NotYetExpired, etc.) surface via `subxt::Error` from
+/// the dispatch result and are not re-modeled here.
+#[derive(Debug, thiserror::Error)]
+enum ExpireCommitmentError {
+    #[error("subxt error: {0}")]
+    Subxt(#[from] subxt::Error),
+    #[error("CommitmentExpired event not found in finalized block")]
+    EventMissing,
+}
+
+/// Permissionless cleanup: purges a `Pending` or `Active` commitment that
+/// has passed `expires_at` without acknowledgement or settlement. Any
+/// signed account may call this -- it is a storage-reclamation operation,
+/// not a party-specific action.
+async fn expire_commitment(
+    client: &OnlineClient<PolkadotConfig>,
+    signer: &(impl Signer<PolkadotConfig> + Send + Sync),
+    commitment_id: CommitmentId,
+) -> Result<(), ExpireCommitmentError> {
+    let tx = subxt::dynamic::tx(PALLET_NAME, "expire_commitment", vec![Value::from_bytes(commitment_id)]);
+
+    let events = client
+        .tx()
+        .sign_and_submit_then_watch_default(&tx, signer)
+        .await?
+        .wait_for_finalized_success()
+        .await?;
+
+    events
+        .iter()
+        .filter_map(|e| e.ok())
+        .find(|e| e.pallet_name() == PALLET_NAME && e.variant_name() == "CommitmentExpired")
+        .ok_or(ExpireCommitmentError::EventMissing)?;
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("ArthNeura Off-Chain Companion Node Initialized.");
