@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 tokio = { version = "1.38", features = ["full"] }
 subxt = { version = "0.38", features = ["native"] }
+subxt-signer = { version = "0.38", features = ["subxt", "sr25519"] }
 codec = { package = "parity-scale-codec", version = "3.7", features = ["derive"] }
 rs_merkle = "1.4"
 sp-core = { workspace = true, default-features = false, features = ["std"] }

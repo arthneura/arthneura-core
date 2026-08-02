@@ -5844,6 +5844,7 @@ dependencies = [
  "rs_merkle",
  "sp-core",
  "subxt",
+ "subxt-signer",
  "thiserror 1.0.69",
  "tokio",
 ]

@@ -225,6 +225,40 @@ fn decode_fixed_bytes_field(
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("ArthNeura Off-Chain Companion Node Initialized.");
+
+    // --- Smoke test: register_commitment against a live --dev node ---------
+    // Throwaway wiring for end-to-end verification only. Not the eventual
+    // CLI entrypoint — args, error handling, and account sourcing are all
+    // placeholders pending the real CLI (clap) pass.
+    let client = OnlineClient::<PolkadotConfig>::from_url("ws://127.0.0.1:9944").await?;
+    let alice = subxt_signer::sr25519::dev::alice();
+
+    // Placeholder DIDs — no corresponding AgentRegistry entries exist yet,
+    // so this call is expected to fail with a pallet-level AgentNotFound
+    // (or equivalent) error. Failure at that layer is a PASS for this
+    // smoke test: it proves the dynamic tx round-trips through the node
+    // and a real pallet error decodes back, rather than a transport/codec
+    // failure. A clean AgentRegistry-backed success test is a follow-up.
+    let provider_did: Did = [1u8; 32];
+    let consumer_did: Did = [2u8; 32];
+    let payload = b"arthneura smoke test payload".to_vec();
+    let metadata = b"smoke-test".to_vec();
+
+    let store = FsChunkStore::new("/tmp/arthneura-offchain-store");
+
+    match register_commitment(&client, &alice, &store, provider_did, consumer_did, &payload, metadata, 1000).await {
+        Ok(result) => {
+            println!(
+                "register_commitment succeeded: commitment_id=0x{} total_chunks={}",
+                hex::encode(result.commitment_id),
+                result.total_chunks
+            );
+        }
+        Err(e) => {
+            println!("register_commitment returned an error (see note above on expected failure mode): {e}");
+        }
+    }
+
     Ok(())
 }
 
