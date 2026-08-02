@@ -322,6 +322,62 @@ async fn close_commitment(
     Ok(())
 }
 
+// -----------------------------------------------------------------------
+// raise_dispute client
+// -----------------------------------------------------------------------
+
+/// Pre-submission and transport errors only. On-chain `Error<T>` variants
+/// (NotActive, DisputeAlreadyRaised, ConsumerNotEligible, etc.) surface
+/// via `subxt::Error` from the dispatch result and are not re-modeled here.
+#[derive(Debug, thiserror::Error)]
+enum RaiseDisputeError {
+    #[error("subxt error: {0}")]
+    Subxt(#[from] subxt::Error),
+    #[error("DisputeRaised event not found in finalized block")]
+    EventMissing,
+}
+
+/// Consumer-side dispute initiation: flags a mismatch between the
+/// originally committed data and what was actually received off-chain.
+/// `received_chunk_hash` is the consumer's locally-computed hash of the
+/// corrupted/suspect chunk -- not re-derived here, caller supplies it.
+/// Opens the provider's response window (`counter_deadline`); a second
+/// dispute on the same `commitment_id` is rejected on-chain.
+async fn raise_dispute(
+    client: &OnlineClient<PolkadotConfig>,
+    signer: &(impl Signer<PolkadotConfig> + Send + Sync),
+    commitment_id: CommitmentId,
+    consumer_did: Did,
+    received_chunk_hash: [u8; 32],
+    chunk_count: u64,
+) -> Result<(), RaiseDisputeError> {
+    let tx = subxt::dynamic::tx(
+        PALLET_NAME,
+        "raise_dispute",
+        vec![
+            Value::from_bytes(commitment_id),
+            Value::from_bytes(consumer_did),
+            Value::from_bytes(received_chunk_hash),
+            Value::u128(chunk_count as u128),
+        ],
+    );
+
+    let events = client
+        .tx()
+        .sign_and_submit_then_watch_default(&tx, signer)
+        .await?
+        .wait_for_finalized_success()
+        .await?;
+
+    events
+        .iter()
+        .filter_map(|e| e.ok())
+        .find(|e| e.pallet_name() == PALLET_NAME && e.variant_name() == "DisputeRaised")
+        .ok_or(RaiseDisputeError::EventMissing)?;
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("ArthNeura Off-Chain Companion Node Initialized.");
