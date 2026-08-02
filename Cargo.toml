@@ -11,6 +11,7 @@ members = [
     "pallets/template",
     "pallets/pallet-agent-registry",
     "runtime",
+    "offchain-agent-registry",
 ]
 resolver = "2"
 
