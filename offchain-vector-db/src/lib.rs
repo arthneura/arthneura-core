@@ -108,6 +108,7 @@ pub enum RegisterCommitmentError {
     EventMissing,
 }
 
+#[derive(Debug)]
 pub struct RegisterCommitmentResult {
     pub commitment_id: CommitmentId,
     pub merkle_root: MerkleRoot,

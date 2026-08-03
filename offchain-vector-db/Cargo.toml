@@ -17,3 +17,4 @@ thiserror = "1.0"
 
 [dev-dependencies]
 pallet-vector-db = { workspace = true, features = ["std"] }
+offchain-agent-registry = { path = "../offchain-agent-registry" }
