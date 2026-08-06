@@ -5882,6 +5882,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "offchain-vector-db"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "offchain-agent-registry",
+ "pallet-vector-db",
+ "parity-scale-codec",
+ "rs_merkle",
+ "sp-core",
+ "subxt",
+ "subxt-signer",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
 name = "oid-registry"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
