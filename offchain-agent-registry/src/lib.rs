@@ -104,3 +104,58 @@ pub async fn register_agent(
 
     Ok(RegisteredAgent { did, signing_key_bytes })
 }
+
+// -----------------------------------------------------------------------
+// update_profile client
+// -----------------------------------------------------------------------
+
+/// Pre-submission and transport errors only. On-chain `Error<T>` variants
+/// (DidNotFound, NotController, AgentRevoked) surface via `subxt::Error`
+/// from the dispatch result and are not re-modeled here.
+#[derive(Debug, thiserror::Error)]
+pub enum UpdateProfileError {
+    #[error("subxt error: {0}")]
+    Subxt(#[from] subxt::Error),
+    #[error("AgentProfileUpdated event not found in finalized block")]
+    EventMissing,
+}
+
+/// Overwrites the mutable fields (`capabilities`, `metadata`, `label`) of
+/// an existing profile. Caller must be the DID's registered controller;
+/// `Revoked` profiles reject this call. Note this is a full overwrite, not
+/// a merge -- omitted fields are not preserved, matching the pallet's
+/// `update_profile` semantics exactly.
+pub async fn update_profile(
+    client: &OnlineClient<PolkadotConfig>,
+    signer: &(impl SubxtSigner<PolkadotConfig> + Send + Sync),
+    did: Did,
+    capabilities: u64,
+    metadata: Vec<u8>,
+    label: Vec<u8>,
+) -> Result<(), UpdateProfileError> {
+    let tx = subxt::dynamic::tx(
+        PALLET_NAME,
+        "update_profile",
+        vec![
+            Value::from_bytes(did),
+            Value::u128(capabilities as u128),
+            Value::from_bytes(metadata),
+            Value::from_bytes(label),
+        ],
+    );
+
+    let events = client
+        .tx()
+        .sign_and_submit_then_watch_default(&tx, signer)
+        .await?
+        .wait_for_finalized_success()
+        .await?;
+
+    events
+        .iter()
+        .filter_map(|e| e.ok())
+        .find(|e| e.pallet_name() == PALLET_NAME && e.variant_name() == "AgentProfileUpdated")
+        .ok_or(UpdateProfileError::EventMissing)?;
+
+    Ok(())
+}
