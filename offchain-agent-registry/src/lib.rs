@@ -159,3 +159,74 @@ pub async fn update_profile(
 
     Ok(())
 }
+
+// -----------------------------------------------------------------------
+// set_agent_status client
+// -----------------------------------------------------------------------
+
+/// Mirrors on-chain `pallet_agent_registry::AgentStatus`. Variant names
+/// MUST match exactly (case-sensitive) -- passed to `subxt::dynamic::Value`
+/// as an unnamed-variant SCALE enum, resolved by name against live
+/// metadata, not by discriminant index.
+#[derive(Debug, Clone, Copy)]
+pub enum AgentStatus {
+    Active,
+    Suspended,
+    Revoked,
+}
+
+impl AgentStatus {
+    fn variant_name(self) -> &'static str {
+        match self {
+            AgentStatus::Active => "Active",
+            AgentStatus::Suspended => "Suspended",
+            AgentStatus::Revoked => "Revoked",
+        }
+    }
+}
+
+/// Pre-submission and transport errors only. On-chain `Error<T>` variants
+/// (DidNotFound, NotController, AgentRevoked) surface via `subxt::Error`
+/// from the dispatch result and are not re-modeled here.
+#[derive(Debug, thiserror::Error)]
+pub enum SetAgentStatusError {
+    #[error("subxt error: {0}")]
+    Subxt(#[from] subxt::Error),
+    #[error("AgentStatusChanged event not found in finalized block")]
+    EventMissing,
+}
+
+/// Changes an agent's lifecycle status. Caller must be the DID's
+/// registered controller. `Revoked` is terminal on-chain -- once set, no
+/// further transitions are possible for that DID (enforced by the pallet,
+/// not re-validated here).
+pub async fn set_agent_status(
+    client: &OnlineClient<PolkadotConfig>,
+    signer: &(impl SubxtSigner<PolkadotConfig> + Send + Sync),
+    did: Did,
+    new_status: AgentStatus,
+) -> Result<(), SetAgentStatusError> {
+    let tx = subxt::dynamic::tx(
+        PALLET_NAME,
+        "set_agent_status",
+        vec![
+            Value::from_bytes(did),
+            Value::unnamed_variant(new_status.variant_name(), vec![]),
+        ],
+    );
+
+    let events = client
+        .tx()
+        .sign_and_submit_then_watch_default(&tx, signer)
+        .await?
+        .wait_for_finalized_success()
+        .await?;
+
+    events
+        .iter()
+        .filter_map(|e| e.ok())
+        .find(|e| e.pallet_name() == PALLET_NAME && e.variant_name() == "AgentStatusChanged")
+        .ok_or(SetAgentStatusError::EventMissing)?;
+
+    Ok(())
+}
