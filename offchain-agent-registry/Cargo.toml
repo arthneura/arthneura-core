@@ -1,0 +1,19 @@
+[package]
+name = "offchain-agent-registry"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+tokio = { version = "1.38", features = ["full"] }
+subxt = { version = "0.38", features = ["native"] }
+subxt-signer = { version = "0.38", features = ["subxt", "sr25519"] }
+codec = { package = "parity-scale-codec", version = "3.7", features = ["derive"] }
+sp-core = { workspace = true, default-features = false, features = ["std"] }
+ml-dsa = { version = "0.1.1", features = ["getrandom"] }
+hex = "0.4"
+thiserror = "1.0"
+
+[dev-dependencies]
+pallet-agent-registry = { workspace = true, features = ["std"] }
