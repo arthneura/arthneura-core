@@ -230,3 +230,53 @@ pub async fn set_agent_status(
 
     Ok(())
 }
+
+// -----------------------------------------------------------------------
+// give_star client
+// -----------------------------------------------------------------------
+
+/// Pre-submission and transport errors only. On-chain `Error<T>` variants
+/// (NotController, CannotStarSelf, DidNotFound, AgentRevoked,
+/// CannotStarSameController, CooldownNotExpired) surface via
+/// `subxt::Error` from the dispatch result and are not re-modeled here.
+#[derive(Debug, thiserror::Error)]
+pub enum GiveStarError {
+    #[error("subxt error: {0}")]
+    Subxt(#[from] subxt::Error),
+    #[error("StarGiven event not found in finalized block")]
+    EventMissing,
+}
+
+/// Gives a reputation star from `giver_did` to `receiver`, incrementing
+/// the receiver's `reputation_score` by 1. Caller must control
+/// `giver_did`. Rejected on-chain for: self-starring, starring a DID
+/// controlled by the same account (sybil-resistance), or calling again
+/// before `Config::StarCooldown` blocks have elapsed since the last star
+/// from this giver/receiver pair.
+pub async fn give_star(
+    client: &OnlineClient<PolkadotConfig>,
+    signer: &(impl SubxtSigner<PolkadotConfig> + Send + Sync),
+    giver_did: Did,
+    receiver: Did,
+) -> Result<(), GiveStarError> {
+    let tx = subxt::dynamic::tx(
+        PALLET_NAME,
+        "give_star",
+        vec![Value::from_bytes(giver_did), Value::from_bytes(receiver)],
+    );
+
+    let events = client
+        .tx()
+        .sign_and_submit_then_watch_default(&tx, signer)
+        .await?
+        .wait_for_finalized_success()
+        .await?;
+
+    events
+        .iter()
+        .filter_map(|e| e.ok())
+        .find(|e| e.pallet_name() == PALLET_NAME && e.variant_name() == "StarGiven")
+        .ok_or(GiveStarError::EventMissing)?;
+
+    Ok(())
+}
