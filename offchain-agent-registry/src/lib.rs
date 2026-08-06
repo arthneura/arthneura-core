@@ -280,3 +280,51 @@ pub async fn give_star(
 
     Ok(())
 }
+
+// -----------------------------------------------------------------------
+// remove_star client
+// -----------------------------------------------------------------------
+
+/// Pre-submission and transport errors only. On-chain `Error<T>` variants
+/// (NotController, NotStarred) surface via `subxt::Error` from the
+/// dispatch result and are not re-modeled here.
+#[derive(Debug, thiserror::Error)]
+pub enum RemoveStarError {
+    #[error("subxt error: {0}")]
+    Subxt(#[from] subxt::Error),
+    #[error("StarRemoved event not found in finalized block")]
+    EventMissing,
+}
+
+/// Removes a previously given star, decrementing the receiver's
+/// `reputation_score` by 1 (saturating -- never goes below zero). Caller
+/// must control `giver_did`. Rejected on-chain if no star currently
+/// exists from this giver/receiver pair. Resets the cooldown record to
+/// zero, permitting an immediate re-star after removal.
+pub async fn remove_star(
+    client: &OnlineClient<PolkadotConfig>,
+    signer: &(impl SubxtSigner<PolkadotConfig> + Send + Sync),
+    giver_did: Did,
+    receiver: Did,
+) -> Result<(), RemoveStarError> {
+    let tx = subxt::dynamic::tx(
+        PALLET_NAME,
+        "remove_star",
+        vec![Value::from_bytes(giver_did), Value::from_bytes(receiver)],
+    );
+
+    let events = client
+        .tx()
+        .sign_and_submit_then_watch_default(&tx, signer)
+        .await?
+        .wait_for_finalized_success()
+        .await?;
+
+    events
+        .iter()
+        .filter_map(|e| e.ok())
+        .find(|e| e.pallet_name() == PALLET_NAME && e.variant_name() == "StarRemoved")
+        .ok_or(RemoveStarError::EventMissing)?;
+
+    Ok(())
+}
