@@ -39,6 +39,7 @@ use sp_runtime::{traits::One, Perbill};
 use sp_version::RuntimeVersion;
 
 // Local module imports
+use crate::adapters::agent_registry::AgentRegistryAdapter;
 use super::{
     AccountId, Aura, Balance, Balances, Block, BlockNumber, Hash, Nonce, PalletInfo, Runtime,
     RuntimeCall, RuntimeEvent, RuntimeFreezeReason, RuntimeHoldReason, RuntimeOrigin, RuntimeTask,
@@ -172,4 +173,27 @@ impl pallet_agent_registry::Config for Runtime {
     type Currency = Balances;
     /// 100 ART (12 decimals).
     type RegistrationDeposit = ConstU128<{ 100 * UNIT }>;
+}
+
+/// Configure the pallet-vector-db in pallets/pallet-vector-db.
+///
+/// `DisputeWindow` and `MaxCommitmentLifetime` are compile-time constants for
+/// initial launch. Both are sized around autonomous, machine-speed dispute
+/// resolution (proof generation is pure computation — no human judgment is
+/// ever on the critical path) while still absorbing realistic node downtime
+/// (crashes, restarts, transient network partitions). `DisputeWindow` is kept
+/// a full order of magnitude smaller than `MaxCommitmentLifetime` so a dispute
+/// raised at any point in a commitment's life always gets its full window.
+///
+/// TODO(governance): migrate these to storage-backed, governance-adjustable
+/// values once the governance pallet lands, rather than requiring a runtime
+/// upgrade to retune them.
+impl pallet_vector_db::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type WeightInfo = ();
+    type AgentRegistry = AgentRegistryAdapter;
+    /// 14,400 blocks ≈ 1 day at 6 s/block.
+    type DisputeWindow = ConstU32<14_400>;
+    /// 100,800 blocks ≈ 7 days at 6 s/block.
+    type MaxCommitmentLifetime = ConstU32<100_800>;
 }

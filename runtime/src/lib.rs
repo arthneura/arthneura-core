@@ -3,6 +3,7 @@
 #[cfg(feature = "std")]
 include!(concat!(env!("OUT_DIR"), "/wasm_binary.rs"));
 
+pub mod adapters;
 pub mod apis;
 #[cfg(feature = "runtime-benchmarks")]
 mod benchmarks;
@@ -230,4 +231,9 @@ mod runtime {
     pub type Template = pallet_template;
     #[runtime::pallet_index(8)]
     pub type AgentRegistry = pallet_agent_registry;
+
+    // Anchors dispute-arbitrable Merkle-root commitments between AI-agent
+    // providers and consumers. See pallets/pallet-vector-db.
+    #[runtime::pallet_index(9)]
+    pub type VectorDb = pallet_vector_db;
 }
