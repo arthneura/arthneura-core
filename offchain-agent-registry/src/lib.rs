@@ -328,3 +328,46 @@ pub async fn remove_star(
 
     Ok(())
 }
+
+// -----------------------------------------------------------------------
+// deregister_agent client
+// -----------------------------------------------------------------------
+
+/// Pre-submission and transport errors only. On-chain `Error<T>` variants
+/// (DidNotFound, NotController, AgentAlreadyRevoked) surface via
+/// `subxt::Error` from the dispatch result and are not re-modeled here.
+#[derive(Debug, thiserror::Error)]
+pub enum DeregisterAgentError {
+    #[error("subxt error: {0}")]
+    Subxt(#[from] subxt::Error),
+    #[error("AgentDeregistered event not found in finalized block")]
+    EventMissing,
+}
+
+/// Voluntarily exits `did` from the registry: unreserves the full
+/// registration deposit back to the controller, prunes the DID from the
+/// controller's reverse index, and deletes the profile. Caller must be
+/// the registered controller. `Revoked` profiles cannot deregister --
+/// that status is terminal and forfeits the deposit permanently.
+pub async fn deregister_agent(
+    client: &OnlineClient<PolkadotConfig>,
+    signer: &(impl SubxtSigner<PolkadotConfig> + Send + Sync),
+    did: Did,
+) -> Result<(), DeregisterAgentError> {
+    let tx = subxt::dynamic::tx(PALLET_NAME, "deregister_agent", vec![Value::from_bytes(did)]);
+
+    let events = client
+        .tx()
+        .sign_and_submit_then_watch_default(&tx, signer)
+        .await?
+        .wait_for_finalized_success()
+        .await?;
+
+    events
+        .iter()
+        .filter_map(|e| e.ok())
+        .find(|e| e.pallet_name() == PALLET_NAME && e.variant_name() == "AgentDeregistered")
+        .ok_or(DeregisterAgentError::EventMissing)?;
+
+    Ok(())
+}
