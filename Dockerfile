@@ -3,6 +3,7 @@ FROM docker.io/paritytech/ci-unified:latest as builder
 WORKDIR /polkadot
 COPY . /polkadot
 
+ENV RUSTUP_TOOLCHAIN=stable-x86_64-unknown-linux-gnu
 RUN cargo fetch
 RUN cargo build --locked --release
 

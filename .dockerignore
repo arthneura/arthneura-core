@@ -1,0 +1,6 @@
+target/
+**/target/
+.git/
+*.bak*
+.cargo/
+offchain-vector-db/artifacts/
