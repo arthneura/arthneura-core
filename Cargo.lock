@@ -194,6 +194,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "argon2"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c3610892ee6e0cbce8ae2700349fcf8f98adb0dbfbee85aec3c9179d29cc072"
+dependencies = [
+ "base64ct",
+ "blake2 0.10.6",
+ "cpufeatures 0.2.17",
+ "password-hash",
+]
+
+[[package]]
 name = "ark-bls12-377"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5870,15 +5882,22 @@ dependencies = [
 name = "offchain-agent-registry"
 version = "0.1.0"
 dependencies = [
+ "argon2",
+ "base64 0.22.1",
+ "chacha20poly1305",
+ "getrandom 0.3.3",
  "hex",
  "ml-dsa",
  "pallet-agent-registry",
  "parity-scale-codec",
+ "serde",
+ "serde_json",
  "sp-core",
  "subxt",
  "subxt-signer",
  "thiserror 1.0.69",
  "tokio",
+ "zeroize",
 ]
 
 [[package]]

@@ -8,6 +8,10 @@ use subxt::dynamic::Value;
 use subxt::tx::Signer as SubxtSigner;
 use subxt::{OnlineClient, PolkadotConfig};
 
+pub mod keystore;
+
+use std::path::Path;
+
 pub const PALLET_NAME: &str = "AgentRegistry";
 const DID_DOMAIN_TAG: &[u8] = b"ArthNeura-DID-v1";
 
@@ -370,4 +374,54 @@ pub async fn deregister_agent(
         .ok_or(DeregisterAgentError::EventMissing)?;
 
     Ok(())
+}
+
+// -----------------------------------------------------------------------
+// register_or_load_agent -- key-persistence wrapper
+// -----------------------------------------------------------------------
+
+#[derive(Debug, thiserror::Error)]
+pub enum RegisterOrLoadError {
+    #[error("on-chain registration failed: {0}")]
+    Register(#[from] RegisterAgentError),
+    #[error("keystore error: {0}")]
+    KeyStore(#[from] keystore::KeyStoreError),
+}
+
+/// Idempotent identity bootstrap: if an encrypted identity already
+/// exists on disk under `key_label` in `keystore_dir`, decrypts and
+/// returns it WITHOUT touching the chain. Otherwise, registers a fresh
+/// agent on-chain via [`register_agent`] and persists the resulting
+/// keypair to disk before returning.
+///
+/// This is what makes an agent's identity survive a process restart --
+/// without it, every `register_agent` call is a throwaway identity that
+/// can never re-sign as itself again.
+///
+/// Known limitation: when loading an existing identity from disk, this
+/// does NOT verify against the live chain that the DID is still
+/// registered or that `signer` is still its controller (e.g. after a
+/// `deregister_agent` call made from elsewhere). Deferred pending a
+/// verified subxt dynamic-storage read.
+pub async fn register_or_load_agent(
+    client: &OnlineClient<PolkadotConfig>,
+    signer: &(impl SubxtSigner<PolkadotConfig> + Send + Sync),
+    keystore_dir: &Path,
+    key_label: &str,
+    passphrase: &str,
+    capabilities: u32,
+    metadata: Vec<u8>,
+    display_label: Vec<u8>,
+) -> Result<RegisteredAgent, RegisterOrLoadError> {
+    if keystore::identity_exists(keystore_dir, key_label) {
+        let stored = keystore::load_identity(keystore_dir, key_label, passphrase)?;
+        return Ok(RegisteredAgent {
+            did: stored.did,
+            signing_key_bytes: stored.signing_key_bytes.to_vec(),
+        });
+    }
+
+    let agent = register_agent(client, signer, capabilities, metadata, display_label).await?;
+    keystore::save_identity(keystore_dir, key_label, agent.did, &agent.signing_key_bytes, passphrase)?;
+    Ok(agent)
 }
