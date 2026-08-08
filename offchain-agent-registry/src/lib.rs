@@ -425,3 +425,122 @@ pub async fn register_or_load_agent(
     keystore::save_identity(keystore_dir, key_label, agent.did, &agent.signing_key_bytes, passphrase)?;
     Ok(agent)
 }
+
+// -----------------------------------------------------------------------
+// bootstrap_new_agent -- sponsored sovereign account bootstrap
+// -----------------------------------------------------------------------
+//
+// Addresses a gap `register_or_load_agent` deliberately left open: it
+// persists the ML-DSA *identity* key, but the *account* key that signs
+// every transaction (pays fees, holds the registration deposit) was
+// still supplied by the caller on every call -- meaning no agent had
+// its own durable, funded, sovereign on-chain account.
+//
+// This is the classic agentic-economy cold-start problem: a brand new
+// account has zero balance and cannot pay for its own registration.
+// The pattern here is sponsor-funds-then-steps-away: a funded
+// `sponsor_signer` transfers a one-time bootstrap amount to a FRESH
+// sr25519 account generated for this agent, and that fresh account --
+// not the sponsor -- signs its own `register_agent` call. The
+// resulting on-chain `controller` is the agent's own account. The
+// sponsor never holds the agent's keys and has no ongoing control.
+
+#[derive(Debug, thiserror::Error)]
+pub enum BootstrapAgentError {
+    #[error("funding transfer failed: {0}")]
+    Funding(subxt::Error),
+    #[error("on-chain registration failed: {0}")]
+    Register(#[from] RegisterAgentError),
+    #[error("keystore error: {0}")]
+    KeyStore(#[from] keystore::KeyStoreError),
+    #[error("account key reconstruction failed: {0}")]
+    AccountKey(String),
+}
+
+pub struct BootstrappedAgent {
+    pub did: Did,
+    pub account: subxt_signer::sr25519::Keypair,
+}
+
+/// Idempotent: if an identity + account already exist on disk under
+/// `key_label`, decrypts and returns both (no chain interaction, no new
+/// funding transfer). Otherwise: generates a fresh sr25519 account,
+/// transfers `funding_amount` to it from `sponsor_signer` via
+/// `transfer_keep_alive`, waits for finalization, registers the new
+/// agent using the FRESH account as signer (so `controller` is the
+/// agent's own account on-chain, not the sponsor's), and persists both
+/// the ML-DSA identity and the account seed to the encrypted keystore.
+///
+/// Known limitation (inherited from `register_or_load_agent`): loading
+/// an existing identity does not re-verify against the live chain that
+/// it is still registered/controller-matched.
+pub async fn bootstrap_new_agent(
+    client: &OnlineClient<PolkadotConfig>,
+    sponsor_signer: &(impl SubxtSigner<PolkadotConfig> + Send + Sync),
+    keystore_dir: &Path,
+    key_label: &str,
+    passphrase: &str,
+    funding_amount: u128,
+    capabilities: u32,
+    metadata: Vec<u8>,
+    display_label: Vec<u8>,
+) -> Result<BootstrappedAgent, BootstrapAgentError> {
+    let account_label = format!("{key_label}-account");
+
+    // -- Fast path: identity + account already persisted -----------------
+    if keystore::identity_exists(keystore_dir, key_label)
+        && keystore::identity_exists(keystore_dir, &account_label)
+    {
+        let identity = keystore::load_identity(keystore_dir, key_label, passphrase)?;
+        let account_secret = keystore::load_identity(keystore_dir, &account_label, passphrase)?;
+        let seed: [u8; 32] = account_secret
+            .signing_key_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| BootstrapAgentError::AccountKey("stored account seed is not 32 bytes".into()))?;
+        let account = subxt_signer::sr25519::Keypair::from_secret_key(seed)
+            .map_err(|e| BootstrapAgentError::AccountKey(e.to_string()))?;
+        return Ok(BootstrappedAgent { did: identity.did, account });
+    }
+
+    // -- Cold start: generate a fresh, unfunded sovereign account --------
+    let account_seed: [u8; 32] = {
+        let mut buf = [0u8; 32];
+        getrandom::fill(&mut buf).map_err(|e| BootstrapAgentError::AccountKey(format!("OS RNG failure: {e}")))?;
+        buf
+    };
+    let new_account = subxt_signer::sr25519::Keypair::from_secret_key(account_seed)
+        .map_err(|e| BootstrapAgentError::AccountKey(e.to_string()))?;
+    let new_account_id = new_account.public_key().to_account_id();
+
+    // -- Fund it from the sponsor, just enough to register + operate -----
+    // `MultiAddress::Id(AccountId)` is the standard `dest` shape for
+    // `transfer_keep_alive` under the default Substrate `AccountIdLookup`.
+    let dest = subxt::dynamic::Value::unnamed_variant(
+        "Id",
+        vec![subxt::dynamic::Value::from_bytes(new_account_id.0)],
+    );
+    let transfer_tx = subxt::dynamic::tx(
+        "Balances",
+        "transfer_keep_alive",
+        vec![dest, subxt::dynamic::Value::u128(funding_amount)],
+    );
+    client
+        .tx()
+        .sign_and_submit_then_watch_default(&transfer_tx, sponsor_signer)
+        .await
+        .map_err(BootstrapAgentError::Funding)?
+        .wait_for_finalized_success()
+        .await
+        .map_err(BootstrapAgentError::Funding)?;
+
+    // -- Register on-chain, signed by the NEW account itself --------------
+    // `controller` on-chain becomes `new_account_id`, not the sponsor.
+    let agent = register_agent(client, &new_account, capabilities, metadata, display_label).await?;
+
+    // -- Persist both secrets, encrypted, under related labels -----------
+    keystore::save_identity(keystore_dir, key_label, agent.did, &agent.signing_key_bytes, passphrase)?;
+    keystore::save_identity(keystore_dir, &account_label, agent.did, &account_seed, passphrase)?;
+
+    Ok(BootstrappedAgent { did: agent.did, account: new_account })
+}
