@@ -493,6 +493,42 @@ fn finalize_dispute_event_identities_are_immune_to_caller_identity() {
     });
 }
 
+// --- 22b. Reputation Consequence: Provider Penalized on Guilty Verdict ---
+
+#[test]
+fn finalize_dispute_penalizes_the_guilty_provider() {
+    new_test_ext().execute_with(|| {
+        let (cid, p, _c) = setup_disputed_commitment(1000u64);
+
+        System::set_block_number(12);
+        assert_ok!(VectorDb::finalize_dispute(RuntimeOrigin::signed(1), cid));
+
+        assert_eq!(
+            crate::mock::reputation_calls(),
+            vec![(p, "provider")],
+            "finalize_dispute must call ReputationHandler::penalize_provider \
+             exactly once, on the guilty provider's DID"
+        );
+    });
+}
+
+// --- 22c. Reputation Consequence: No Penalty on Failed Finalize ---
+
+#[test]
+fn finalize_dispute_does_not_penalize_on_rejected_call() {
+    new_test_ext().execute_with(|| {
+        let (cid, _p, _c) = setup_disputed_commitment(1000u64);
+
+        System::set_block_number(5); // still within the window — must reject
+        let _ = VectorDb::finalize_dispute(RuntimeOrigin::signed(1), cid);
+
+        assert!(
+            crate::mock::reputation_calls().is_empty(),
+            "a rejected finalize_dispute must not trigger any reputation penalty"
+        );
+    });
+}
+
 // --- 22. Multi-Dispute Independence Verification ---
 
 #[test]

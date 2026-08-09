@@ -59,6 +59,35 @@ fn clear_agents() {
     AGENTS.with(|a| a.borrow_mut().clear());
 }
 
+// ── Mock Reputation Handler ──────────────────────────────────────────────────
+
+// Records every ReputationHandler call as (did, kind) so tests can assert
+// exactly which penalty fired, on which DID, without a real
+// pallet-agent-registry dependency in this crate's test build.
+thread_local! {
+    static REPUTATION_CALLS: RefCell<Vec<([u8; 32], &'static str)>> = RefCell::new(Vec::new());
+}
+
+pub struct MockReputationHandler;
+
+impl crate::ReputationHandler for MockReputationHandler {
+    fn penalize_provider(did: &[u8; 32]) {
+        REPUTATION_CALLS.with(|c| c.borrow_mut().push((*did, "provider")));
+    }
+    fn penalize_false_disputer(did: &[u8; 32]) {
+        REPUTATION_CALLS.with(|c| c.borrow_mut().push((*did, "false_disputer")));
+    }
+}
+
+/// Returns every `ReputationHandler` call recorded so far, in order.
+pub fn reputation_calls() -> Vec<([u8; 32], &'static str)> {
+    REPUTATION_CALLS.with(|c| c.borrow().clone())
+}
+
+fn clear_reputation_calls() {
+    REPUTATION_CALLS.with(|c| c.borrow_mut().clear());
+}
+
 // ── Pallet Configuration ─────────────────────────────────────────────────────
 
 parameter_types! {
@@ -66,6 +95,10 @@ parameter_types! {
     pub const DisputeWindow: u64 = 10;
     /// Hard ceiling on commitment lifetimes (1,000 blocks).
     pub const MaxCommitmentLifetime: u64 = 1_000;
+    /// Mirrors the runtime's intended production value (see runtime/src/configs/mod.rs).
+    pub const ProviderGuiltySlash: u32 = 5;
+    /// Mirrors the runtime's intended production value.
+    pub const FalseDisputeSlash: u32 = 2;
 }
 
 impl pallet_vector_db::Config for Runtime {
@@ -74,6 +107,9 @@ impl pallet_vector_db::Config for Runtime {
     type AgentRegistry = MockRegistry;
     type DisputeWindow = DisputeWindow;
     type MaxCommitmentLifetime = MaxCommitmentLifetime;
+    type ReputationHandler = MockReputationHandler;
+    type ProviderGuiltySlash = ProviderGuiltySlash;
+    type FalseDisputeSlash = FalseDisputeSlash;
 }
 
 // ── Test Externalities Builder ───────────────────────────────────────────────
@@ -82,6 +118,7 @@ impl pallet_vector_db::Config for Runtime {
 /// Block 1 ensures that events are deposited and queryable (events are ignored at block 0).
 pub fn new_test_ext() -> sp_io::TestExternalities {
     clear_agents();
+    clear_reputation_calls();
     let storage = frame_system::GenesisConfig::<Runtime>::default()
         .build_storage()
         .unwrap();
