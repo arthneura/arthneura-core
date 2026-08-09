@@ -242,6 +242,7 @@ fn close_commitment_fails_after_dispute_raised() {
             RuntimeOrigin::signed(2),
             cid,
             test_did(2),
+            0u64,
             [0xFFu8; 32],
             10u64,
         ));
