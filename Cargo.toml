@@ -13,6 +13,7 @@ members = [
     "pallets/pallet-vector-db",
     "runtime",
     "offchain-agent-registry",
+    "agent-economy-sim",
     "offchain-vector-db",
 ]
 resolver = "2"

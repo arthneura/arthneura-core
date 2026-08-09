@@ -72,6 +72,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-economy-sim"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "offchain-agent-registry",
+ "offchain-vector-db",
+ "rand 0.8.5",
+ "subxt",
+ "subxt-signer",
+ "tokio",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"

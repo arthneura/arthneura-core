@@ -1,0 +1,15 @@
+[package]
+name = "agent-economy-sim"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+tokio = { version = "1.38", features = ["full"] }
+subxt = { version = "0.38", features = ["native"] }
+subxt-signer = { version = "0.38", features = ["subxt", "sr25519"] }
+offchain-vector-db = { path = "../offchain-vector-db" }
+offchain-agent-registry = { path = "../offchain-agent-registry" }
+hex = "0.4"
+rand = "0.8"
