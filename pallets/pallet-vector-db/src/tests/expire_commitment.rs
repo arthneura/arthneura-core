@@ -310,6 +310,7 @@ fn expire_commitment_rejects_disputed_commitment() {
             RuntimeOrigin::signed(2),
             cid,
             c,
+            0u64,
             [0xEEu8; 32],
             10u64,
         ));
@@ -350,6 +351,7 @@ fn expire_commitment_rejects_dispute_resolved_commitment() {
             RuntimeOrigin::signed(2),
             cid,
             c,
+            0u64,
             [0xEEu8; 32],
             10u64,
         ));

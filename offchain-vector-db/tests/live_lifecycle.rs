@@ -166,13 +166,13 @@ async fn brutal_lifecycle_suite() {
     println!("Section 9.1-9.2 OK: registered + acknowledged commit_b=0x{}", hex::encode(commit_b.commitment_id));
 
     let bogus_received_hash: [u8; 32] = [0x22; 32];
-    raise_dispute(&client, &bob, commit_b.commitment_id, consumer_did, bogus_received_hash, commit_b.total_chunks)
+    raise_dispute(&client, &bob, commit_b.commitment_id, consumer_did, 0u64, bogus_received_hash, commit_b.total_chunks)
         .await
         .expect("Section 9.3: raise_dispute must succeed on an Active commitment");
     println!("Section 9.3 OK: dispute raised");
 
     // Section 10 (error): raising a second dispute on the same commitment
-    let double_dispute = raise_dispute(&client, &bob, commit_b.commitment_id, consumer_did, bogus_received_hash, commit_b.total_chunks).await;
+    let double_dispute = raise_dispute(&client, &bob, commit_b.commitment_id, consumer_did, 0u64, bogus_received_hash, commit_b.total_chunks).await;
     assert_pallet_error(double_dispute, "NotActive"); // corrected: raise_dispute flips status Active->Disputed, so a second attempt fails the status guard, not a dedicated "already raised" check
     println!("Section 10 OK: double-dispute rejected as expected");
 

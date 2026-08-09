@@ -42,6 +42,7 @@ fn setup_disputed_commitment(expires_in_blocks: u64) -> ([u8; 32], [u8; 32], [u8
         RuntimeOrigin::signed(2),
         cid,
         c,
+        0u64,
         [0xEEu8; 32],
         10u64,
     ));
@@ -315,6 +316,7 @@ fn finalize_dispute_rejects_after_successful_counter() {
             RuntimeOrigin::signed(2),
             cid,
             c,
+            0u64,
             [0xEEu8; 32],
             4u64,
         ));
@@ -329,7 +331,6 @@ fn finalize_dispute_rejects_after_successful_counter() {
             RuntimeOrigin::signed(1),
             cid,
             p,
-            0u64,
             bounded_chunk,
             bounded_proof,
         ));
@@ -564,6 +565,7 @@ fn finalize_dispute_multiple_commitments_are_independent() {
             RuntimeOrigin::signed(2),
             cid1,
             c1,
+            0u64,
             [0xEEu8; 32],
             10u64,
         ));
@@ -587,6 +589,7 @@ fn finalize_dispute_multiple_commitments_are_independent() {
             RuntimeOrigin::signed(3),
             cid2,
             c2,
+            0u64,
             [0xEEu8; 32],
             10u64,
         ));
