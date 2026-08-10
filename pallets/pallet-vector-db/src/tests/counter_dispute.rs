@@ -801,6 +801,59 @@ fn counter_dispute_succeeds_against_non_power_of_two_leaf_tree() {
     });
 }
 
+// --- 29b. Reputation Consequence: False Disputer Penalized ---
+
+#[test]
+fn counter_dispute_penalizes_the_false_disputer() {
+    new_test_ext().execute_with(|| {
+        let index = 0usize;
+        let (cid, tree, chunks) = setup_disputed_commitment(4, 100u64);
+        let consumer_did = test_did(2);
+
+        assert_ok!(VectorDb::counter_dispute(
+            RuntimeOrigin::signed(1),
+            cid,
+            test_did(1),
+            bounded_chunk(chunks[index].clone()),
+            proof_for(&tree, index),
+        ));
+
+        assert_eq!(
+            crate::mock::reputation_calls(),
+            vec![(consumer_did, "false_disputer")],
+            "counter_dispute must call ReputationHandler::penalize_false_disputer \
+             exactly once, on the consumer's DID -- not the provider's"
+        );
+    });
+}
+
+// --- 29c. Reputation Consequence: No Penalty on Failed Counter ---
+
+#[test]
+fn counter_dispute_does_not_penalize_on_invalid_proof() {
+    new_test_ext().execute_with(|| {
+        let index = 2usize;
+        let (cid, _tree, chunks) = setup_disputed_commitment_at(8, 100u64, index as ChunkIndex);
+
+        let bogus_proof: BoundedVec<[u8; 32], ConstU32<MAX_PROOF_DEPTH>> =
+            BoundedVec::try_from(vec![[0x99u8; 32], [0x88u8; 32], [0x77u8; 32]]).unwrap();
+
+        let _ = VectorDb::counter_dispute(
+            RuntimeOrigin::signed(1),
+            cid,
+            test_did(1),
+            bounded_chunk(chunks[index].clone()),
+            bogus_proof,
+        );
+
+        assert!(
+            crate::mock::reputation_calls().is_empty(),
+            "a rejected counter_dispute (invalid proof) must not trigger any \
+             reputation penalty"
+        );
+    });
+}
+
 // --- 29. Multi-Dispute Independence Verification ---
 
 #[test]
