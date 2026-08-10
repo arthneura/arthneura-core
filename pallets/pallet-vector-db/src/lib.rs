@@ -195,6 +195,12 @@ pub mod pallet {
         pub commitment_id: CommitmentId,
         pub merkle_root: MerkleRoot,
         pub received_chunk_hash: [u8; 32],
+        /// The specific chunk index the consumer is claiming was corrupted.
+        /// `counter_dispute` binds its Merkle-proof verification to exactly
+        /// this index — the provider can no longer choose which chunk to
+        /// prove, closing the loophole where an unrelated-but-valid chunk
+        /// could be used to falsely refute a legitimate corruption claim.
+        pub disputed_chunk_index: ChunkIndex,
         pub raised_at: BlockNumberFor<T>,
         pub counter_deadline: BlockNumberFor<T>,
         pub verdict: Option<DisputeVerdict>,
@@ -266,6 +272,7 @@ pub mod pallet {
         DisputeRaised {
             commitment_id: CommitmentId,
             merkle_root: MerkleRoot,
+            disputed_chunk_index: ChunkIndex,
             received_chunk_hash: [u8; 32],
             counter_deadline: BlockNumberFor<T>,
         },
@@ -522,13 +529,17 @@ pub mod pallet {
         /// Opens an on-chain dispute on cryptographic hash mismatch.
         ///
         /// Invariants: Callable by consumer controller. Received chunk hash
-        /// represents the corrupted leaf on-chain.
+        /// represents the corrupted leaf on-chain. `disputed_chunk_index`
+        /// must be within `commitment.total_chunks` — this is the ONLY
+        /// index `counter_dispute` will later accept a refutation for,
+        /// closing the gap where a provider could prove an unrelated chunk.
         #[pallet::call_index(3)]
         #[pallet::weight(T::WeightInfo::raise_dispute())]
         pub fn raise_dispute(
             origin: OriginFor<T>,
             commitment_id: CommitmentId,
             consumer_did: Did,
+            disputed_chunk_index: ChunkIndex,
             received_chunk_hash: [u8; 32],
             _chunk_count: u64,
         ) -> DispatchResult {
@@ -563,6 +574,14 @@ pub mod pallet {
                 Error::<T>::DisputeAlreadyRaised
             );
 
+            // 2b. Bind the dispute to a specific, in-bounds chunk. This is
+            // the record `counter_dispute` will later check against — it
+            // no longer trusts a caller-supplied index at refutation time.
+            ensure!(
+                disputed_chunk_index < commitment.total_chunks,
+                Error::<T>::ChunkIndexOutOfBounds
+            );
+
             // 3. Initialize dispute record with provider response deadline
             let counter_deadline = current_block.saturating_add(T::DisputeWindow::get());
 
@@ -577,6 +596,7 @@ pub mod pallet {
                     commitment_id,
                     merkle_root: commitment.merkle_root,
                     received_chunk_hash,
+                    disputed_chunk_index,
                     raised_at: current_block,
                     counter_deadline,
                     verdict: None,
@@ -591,6 +611,7 @@ pub mod pallet {
             Self::deposit_event(Event::DisputeRaised {
                 commitment_id,
                 merkle_root, // Use copy variable (Resolved E0382)
+                disputed_chunk_index,
                 received_chunk_hash,
                 counter_deadline,
             });
@@ -600,14 +621,17 @@ pub mod pallet {
         /// Refutes an open dispute by submitting the raw data chunk and Merkle proof.
         ///
         /// Invariants: Callable by provider controller before the deadline.
-        /// Merkle proof validation MUST evaluate to true against registered root.
+        /// Merkle proof validation MUST evaluate to true against registered root,
+        /// AT THE EXACT INDEX RECORDED IN THE DISPUTE (`disputed_chunk_index`,
+        /// set by `raise_dispute`) — the caller no longer chooses which chunk
+        /// to prove. Proving an unrelated-but-valid chunk can no longer be
+        /// used to falsely refute a legitimate corruption claim.
         #[pallet::call_index(4)]
         #[pallet::weight(T::WeightInfo::counter_dispute())]
         pub fn counter_dispute(
             origin: OriginFor<T>,
             commitment_id: CommitmentId,
             provider_did: Did,
-            chunk_index: ChunkIndex,
             chunk_data: BoundedVec<u8, ConstU32<MAX_CHUNK_LEN>>,
             merkle_proof: BoundedVec<[u8; 32], ConstU32<MAX_PROOF_DEPTH>>,
         ) -> DispatchResult {
@@ -638,12 +662,17 @@ pub mod pallet {
                 current_block <= dispute.counter_deadline,
                 Error::<T>::DisputeWindowExpired
             );
+            // Defense-in-depth only: `raise_dispute` already rejects any
+            // out-of-bounds index before a DisputeRecord can ever be
+            // written, so in practice this branch is unreachable — same
+            // pattern as `DisputeAlreadyRaised` elsewhere in this pallet.
             ensure!(
-                chunk_index < commitment.total_chunks,
+                dispute.disputed_chunk_index < commitment.total_chunks,
                 Error::<T>::ChunkIndexOutOfBounds
             );
 
-            // 4. Verify cryptographic Merkle proof on-chain
+            // 4. Verify cryptographic Merkle proof on-chain, bound to the
+            // index recorded at dispute-raise time, not a caller-supplied one.
             let leaf_hash = sp_io::hashing::blake2_256(&chunk_data);
 
             // rs-merkle with Blake2bHasher
@@ -653,7 +682,7 @@ pub mod pallet {
             ensure!(
                 proof.verify(
                     commitment.merkle_root, // Removed `&` borrow here (Resolved E0308)
-                    &[chunk_index as usize],
+                    &[dispute.disputed_chunk_index as usize],
                     &[leaf_hash],
                     commitment.total_chunks as usize
                 ),

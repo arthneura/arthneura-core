@@ -1,4 +1,20 @@
 //! Standard test suite verifying invariants of the `counter_dispute` extrinsic.
+//!
+//! `counter_dispute` no longer accepts a caller-supplied `chunk_index` — it
+//! reads `disputed_chunk_index` from the `DisputeRecord` set by
+//! `raise_dispute`, and verifies the submitted proof against that exact
+//! index. This closes a soundness gap where a provider could previously
+//! refute a dispute by proving any convenient chunk instead of the one
+//! actually in question.
+//!
+//! Two tests from the previous revision no longer apply and were removed
+//! rather than kept as dead weight:
+//! - `deadline_check_precedes_chunk_index_check` — there is no longer a
+//!   caller-supplied chunk index for the deadline check to precede.
+//! - `chunk_index_check_precedes_proof_verification` — same reason; the
+//!   chunk-index bound is now enforced at `raise_dispute` time, not here.
+//! The two `ChunkIndexOutOfBounds` rejection tests moved to
+//! `raise_dispute.rs`, where that bound is now actually enforced.
 
 use super::*;
 use crate::mock::RuntimeEvent;
@@ -46,10 +62,12 @@ fn bounded_chunk(data: Vec<u8>) -> BoundedVec<u8, ConstU32<MAX_CHUNK_LEN>> {
     BoundedVec::try_from(data).expect("chunk must fit within MAX_CHUNK_LEN")
 }
 
-/// Sets up a complete disputed commitment state backed by a real `n`-leaf Merkle tree.
-fn setup_disputed_commitment(
+/// Sets up a complete disputed commitment state backed by a real `n`-leaf
+/// Merkle tree, with the dispute bound to `disputed_chunk_index`.
+fn setup_disputed_commitment_at(
     n: u8,
     expires_in_blocks: u64,
+    disputed_chunk_index: ChunkIndex,
 ) -> ([u8; 32], MerkleTree<Blake2bHasher>, Vec<Vec<u8>>) {
     let (p, c) = setup_valid_pair();
     let chunks = build_chunks(n);
@@ -77,6 +95,7 @@ fn setup_disputed_commitment(
         RuntimeOrigin::signed(2),
         cid,
         c,
+        disputed_chunk_index,
         [0xEEu8; 32],
         n as u64,
     ));
@@ -84,19 +103,27 @@ fn setup_disputed_commitment(
     (cid, tree, chunks)
 }
 
+/// Convenience wrapper: dispute bound to index 0 — the common case for
+/// tests that don't care which specific index is in dispute.
+fn setup_disputed_commitment(
+    n: u8,
+    expires_in_blocks: u64,
+) -> ([u8; 32], MerkleTree<Blake2bHasher>, Vec<Vec<u8>>) {
+    setup_disputed_commitment_at(n, expires_in_blocks, 0u64)
+}
+
 // --- 1. Happy-Path Integration: Real Proof Verification ---
 
 #[test]
 fn counter_dispute_happy_path_succeeds_with_valid_proof() {
     new_test_ext().execute_with(|| {
-        let (cid, tree, chunks) = setup_disputed_commitment(8, 100u64);
         let index = 3usize;
+        let (cid, tree, chunks) = setup_disputed_commitment_at(8, 100u64, index as ChunkIndex);
 
         assert_ok!(VectorDb::counter_dispute(
             RuntimeOrigin::signed(1),
             cid,
             test_did(1),
-            index as ChunkIndex,
             bounded_chunk(chunks[index].clone()),
             proof_for(&tree, index),
         ));
@@ -108,14 +135,13 @@ fn counter_dispute_happy_path_succeeds_with_valid_proof() {
 #[test]
 fn counter_dispute_stores_correct_fields() {
     new_test_ext().execute_with(|| {
-        let (cid, tree, chunks) = setup_disputed_commitment(8, 100u64);
         let index = 5usize;
+        let (cid, tree, chunks) = setup_disputed_commitment_at(8, 100u64, index as ChunkIndex);
 
         assert_ok!(VectorDb::counter_dispute(
             RuntimeOrigin::signed(1),
             cid,
             test_did(1),
-            index as ChunkIndex,
             bounded_chunk(chunks[index].clone()),
             proof_for(&tree, index),
         ));
@@ -133,6 +159,10 @@ fn counter_dispute_stores_correct_fields() {
             Some(DisputeVerdict::ClaimantUnsubstantiated),
             "verdict must be ClaimantUnsubstantiated"
         );
+        assert_eq!(
+            dispute.disputed_chunk_index, index as ChunkIndex,
+            "disputed_chunk_index must remain unchanged by counter_dispute"
+        );
     });
 }
 
@@ -141,14 +171,13 @@ fn counter_dispute_stores_correct_fields() {
 #[test]
 fn counter_dispute_emits_correct_event() {
     new_test_ext().execute_with(|| {
-        let (cid, tree, chunks) = setup_disputed_commitment(4, 100u64);
         let index = 0usize;
+        let (cid, tree, chunks) = setup_disputed_commitment(4, 100u64);
 
         assert_ok!(VectorDb::counter_dispute(
             RuntimeOrigin::signed(1),
             cid,
             test_did(1),
-            index as ChunkIndex,
             bounded_chunk(chunks[index].clone()),
             proof_for(&tree, index),
         ));
@@ -165,15 +194,14 @@ fn counter_dispute_emits_correct_event() {
 #[test]
 fn counter_dispute_only_one_event_on_success() {
     new_test_ext().execute_with(|| {
-        let (cid, tree, chunks) = setup_disputed_commitment(4, 100u64);
         let index = 1usize;
+        let (cid, tree, chunks) = setup_disputed_commitment_at(4, 100u64, index as ChunkIndex);
         System::reset_events();
 
         assert_ok!(VectorDb::counter_dispute(
             RuntimeOrigin::signed(1),
             cid,
             test_did(1),
-            index as ChunkIndex,
             bounded_chunk(chunks[index].clone()),
             proof_for(&tree, index),
         ));
@@ -187,15 +215,14 @@ fn counter_dispute_only_one_event_on_success() {
 #[test]
 fn counter_dispute_decrements_active_commitment_count() {
     new_test_ext().execute_with(|| {
-        let (cid, tree, chunks) = setup_disputed_commitment(4, 100u64);
-        assert_eq!(VectorDb::active_commitment_count(), 1);
         let index = 2usize;
+        let (cid, tree, chunks) = setup_disputed_commitment_at(4, 100u64, index as ChunkIndex);
+        assert_eq!(VectorDb::active_commitment_count(), 1);
 
         assert_ok!(VectorDb::counter_dispute(
             RuntimeOrigin::signed(1),
             cid,
             test_did(1),
-            index as ChunkIndex,
             bounded_chunk(chunks[index].clone()),
             proof_for(&tree, index),
         ));
@@ -209,15 +236,14 @@ fn counter_dispute_decrements_active_commitment_count() {
 #[test]
 fn counter_dispute_rejects_unsigned_origin() {
     new_test_ext().execute_with(|| {
-        let (cid, tree, chunks) = setup_disputed_commitment(4, 100u64);
         let index = 0usize;
+        let (cid, tree, chunks) = setup_disputed_commitment(4, 100u64);
 
         assert_noop!(
             VectorDb::counter_dispute(
                 RuntimeOrigin::none(),
                 cid,
                 test_did(1),
-                index as ChunkIndex,
                 bounded_chunk(chunks[index].clone()),
                 proof_for(&tree, index),
             ),
@@ -231,15 +257,14 @@ fn counter_dispute_rejects_unsigned_origin() {
 #[test]
 fn counter_dispute_rejects_root_origin() {
     new_test_ext().execute_with(|| {
-        let (cid, tree, chunks) = setup_disputed_commitment(4, 100u64);
         let index = 0usize;
+        let (cid, tree, chunks) = setup_disputed_commitment(4, 100u64);
 
         assert_noop!(
             VectorDb::counter_dispute(
                 RuntimeOrigin::root(),
                 cid,
                 test_did(1),
-                index as ChunkIndex,
                 bounded_chunk(chunks[index].clone()),
                 proof_for(&tree, index),
             ),
@@ -263,7 +288,6 @@ fn counter_dispute_rejects_nonexistent_commitment() {
                 RuntimeOrigin::signed(1),
                 bogus_cid,
                 test_did(1),
-                0u64,
                 bounded_chunk(chunks[0].clone()),
                 proof_for(&tree, 0),
             ),
@@ -303,7 +327,6 @@ fn counter_dispute_rejects_still_active() {
                 RuntimeOrigin::signed(1),
                 cid,
                 p,
-                0u64,
                 bounded_chunk(chunks[0].clone()),
                 proof_for(&tree, 0),
             ),
@@ -338,7 +361,6 @@ fn counter_dispute_rejects_still_pending() {
                 RuntimeOrigin::signed(1),
                 cid,
                 p,
-                0u64,
                 bounded_chunk(chunks[0].clone()),
                 proof_for(&tree, 0),
             ),
@@ -352,14 +374,13 @@ fn counter_dispute_rejects_still_pending() {
 #[test]
 fn counter_dispute_double_counter_fails_with_not_disputed() {
     new_test_ext().execute_with(|| {
-        let (cid, tree, chunks) = setup_disputed_commitment(4, 100u64);
         let index = 0usize;
+        let (cid, tree, chunks) = setup_disputed_commitment(4, 100u64);
 
         assert_ok!(VectorDb::counter_dispute(
             RuntimeOrigin::signed(1),
             cid,
             test_did(1),
-            index as ChunkIndex,
             bounded_chunk(chunks[index].clone()),
             proof_for(&tree, index),
         ));
@@ -369,7 +390,6 @@ fn counter_dispute_double_counter_fails_with_not_disputed() {
                 RuntimeOrigin::signed(1),
                 cid,
                 test_did(1),
-                index as ChunkIndex,
                 bounded_chunk(chunks[index].clone()),
                 proof_for(&tree, index),
             ),
@@ -383,8 +403,8 @@ fn counter_dispute_double_counter_fails_with_not_disputed() {
 #[test]
 fn counter_dispute_rejects_invalid_merkle_proof() {
     new_test_ext().execute_with(|| {
-        let (cid, _tree, chunks) = setup_disputed_commitment(8, 100u64);
         let index = 2usize;
+        let (cid, _tree, chunks) = setup_disputed_commitment_at(8, 100u64, index as ChunkIndex);
 
         let bogus_proof: BoundedVec<[u8; 32], ConstU32<MAX_PROOF_DEPTH>> =
             BoundedVec::try_from(vec![[0x99u8; 32], [0x88u8; 32], [0x77u8; 32]]).unwrap();
@@ -394,7 +414,6 @@ fn counter_dispute_rejects_invalid_merkle_proof() {
                 RuntimeOrigin::signed(1),
                 cid,
                 test_did(1),
-                index as ChunkIndex,
                 bounded_chunk(chunks[index].clone()),
                 bogus_proof,
             ),
@@ -408,8 +427,8 @@ fn counter_dispute_rejects_invalid_merkle_proof() {
 #[test]
 fn counter_dispute_rejects_valid_proof_shape_with_tampered_chunk_data() {
     new_test_ext().execute_with(|| {
-        let (cid, tree, _chunks) = setup_disputed_commitment(8, 100u64);
         let index = 4usize;
+        let (cid, tree, _chunks) = setup_disputed_commitment_at(8, 100u64, index as ChunkIndex);
         let tampered_data = vec![0xFFu8; 64];
 
         assert_noop!(
@@ -417,7 +436,6 @@ fn counter_dispute_rejects_valid_proof_shape_with_tampered_chunk_data() {
                 RuntimeOrigin::signed(1),
                 cid,
                 test_did(1),
-                index as ChunkIndex,
                 bounded_chunk(tampered_data),
                 proof_for(&tree, index),
             ),
@@ -426,89 +444,57 @@ fn counter_dispute_rejects_valid_proof_shape_with_tampered_chunk_data() {
     });
 }
 
-// --- 14. Proof Verification: Sibling Index Mismatch ---
+// --- 14. Proof Verification: Chunk/Proof Mismatched Against the Disputed Index ---
+//
+// Redesigned for the binding fix: there is no longer a caller-supplied
+// `chunk_index` to mismatch against the dispute. Instead, this proves the
+// pallet correctly rejects a chunk+proof pair for a DIFFERENT chunk than
+// the one actually recorded as disputed — the provider cannot dodge the
+// real complaint by presenting proof of some other, unrelated chunk.
 
 #[test]
-fn counter_dispute_rejects_proof_for_wrong_index() {
+fn counter_dispute_rejects_proof_for_a_different_chunk_than_disputed() {
     new_test_ext().execute_with(|| {
-        let (cid, tree, chunks) = setup_disputed_commitment(8, 100u64);
+        let disputed_index = 1usize;
+        let (cid, tree, chunks) =
+            setup_disputed_commitment_at(8, 100u64, disputed_index as ChunkIndex);
+
+        // Provider submits chunk 6's data + a valid proof FOR chunk 6 —
+        // real data, real proof, just for the wrong (undisputed) chunk.
+        let wrong_index = 6usize;
 
         assert_noop!(
             VectorDb::counter_dispute(
                 RuntimeOrigin::signed(1),
                 cid,
                 test_did(1),
-                1u64,
-                bounded_chunk(chunks[1].clone()),
-                proof_for(&tree, 6),
+                bounded_chunk(chunks[wrong_index].clone()),
+                proof_for(&tree, wrong_index),
             ),
             Error::<Runtime>::InvalidMerkleProof
         );
     });
 }
 
-// --- 15. Index Bounds Check: Total Chunks Out of Bounds ---
-
-#[test]
-fn counter_dispute_rejects_chunk_index_out_of_bounds() {
-    new_test_ext().execute_with(|| {
-        let (cid, tree, chunks) = setup_disputed_commitment(4, 100u64);
-
-        assert_noop!(
-            VectorDb::counter_dispute(
-                RuntimeOrigin::signed(1),
-                cid,
-                test_did(1),
-                4u64,
-                bounded_chunk(chunks[0].clone()),
-                proof_for(&tree, 0),
-            ),
-            Error::<Runtime>::ChunkIndexOutOfBounds
-        );
-    });
-}
-
-// --- 16. Index Bounds Check: Max Value Rejection ---
-
-#[test]
-fn counter_dispute_rejects_chunk_index_far_out_of_bounds() {
-    new_test_ext().execute_with(|| {
-        let (cid, tree, chunks) = setup_disputed_commitment(4, 100u64);
-
-        assert_noop!(
-            VectorDb::counter_dispute(
-                RuntimeOrigin::signed(1),
-                cid,
-                test_did(1),
-                u64::MAX,
-                bounded_chunk(chunks[0].clone()),
-                proof_for(&tree, 0),
-            ),
-            Error::<Runtime>::ChunkIndexOutOfBounds
-        );
-    });
-}
-
-// --- 17. Index Bounds Check: Upper Boundary Acceptance ---
+// --- 15. Edge Case: Last Valid Chunk Index Acceptance ---
 
 #[test]
 fn counter_dispute_accepts_last_valid_chunk_index() {
     new_test_ext().execute_with(|| {
-        let (cid, tree, chunks) = setup_disputed_commitment(4, 100u64);
-        let index = 3usize;
+        let index = 3usize; // last valid index for n=4
+        let (cid, tree, chunks) = setup_disputed_commitment_at(4, 100u64, index as ChunkIndex);
 
         assert_ok!(VectorDb::counter_dispute(
             RuntimeOrigin::signed(1),
             cid,
             test_did(1),
-            index as ChunkIndex,
             bounded_chunk(chunks[index].clone()),
             proof_for(&tree, index),
         ));
     });
 }
 
-// --- 18. Edge Case: Single Leaf Tree Acceptance ---
+// --- 16. Edge Case: Single Leaf Tree Acceptance ---
 
 #[test]
 fn counter_dispute_accepts_single_leaf_tree_with_empty_proof() {
@@ -519,40 +505,38 @@ fn counter_dispute_accepts_single_leaf_tree_with_empty_proof() {
             RuntimeOrigin::signed(1),
             cid,
             test_did(1),
-            0u64,
             bounded_chunk(chunks[0].clone()),
             proof_for(&tree, 0),
         ));
     });
 }
 
-// --- 19. Temporal Deadline: Inclusive Boundary Acceptance ---
+// --- 17. Temporal Deadline: Inclusive Boundary Acceptance ---
 
 #[test]
 fn counter_dispute_accepts_at_exact_deadline_block_inclusive() {
     new_test_ext().execute_with(|| {
-        let (cid, tree, chunks) = setup_disputed_commitment(4, 1000u64);
         let index = 0usize;
+        let (cid, tree, chunks) = setup_disputed_commitment(4, 1000u64);
 
         System::set_block_number(11);
         assert_ok!(VectorDb::counter_dispute(
             RuntimeOrigin::signed(1),
             cid,
             test_did(1),
-            index as ChunkIndex,
             bounded_chunk(chunks[index].clone()),
             proof_for(&tree, index),
         ));
     });
 }
 
-// --- 20. Temporal Deadline: Exclusive Boundary Rejection ---
+// --- 18. Temporal Deadline: Exclusive Boundary Rejection ---
 
 #[test]
 fn counter_dispute_rejects_one_block_past_deadline() {
     new_test_ext().execute_with(|| {
-        let (cid, tree, chunks) = setup_disputed_commitment(4, 1000u64);
         let index = 0usize;
+        let (cid, tree, chunks) = setup_disputed_commitment(4, 1000u64);
 
         System::set_block_number(12);
         assert_noop!(
@@ -560,7 +544,6 @@ fn counter_dispute_rejects_one_block_past_deadline() {
                 RuntimeOrigin::signed(1),
                 cid,
                 test_did(1),
-                index as ChunkIndex,
                 bounded_chunk(chunks[index].clone()),
                 proof_for(&tree, index),
             ),
@@ -569,13 +552,13 @@ fn counter_dispute_rejects_one_block_past_deadline() {
     });
 }
 
-// --- 21. Temporal Deadline: Out of Bounds Rejection ---
+// --- 19. Temporal Deadline: Out of Bounds Rejection ---
 
 #[test]
 fn counter_dispute_rejects_long_after_deadline() {
     new_test_ext().execute_with(|| {
-        let (cid, tree, chunks) = setup_disputed_commitment(4, 1000u64);
         let index = 0usize;
+        let (cid, tree, chunks) = setup_disputed_commitment(4, 1000u64);
 
         System::set_block_number(5000);
         assert_noop!(
@@ -583,7 +566,6 @@ fn counter_dispute_rejects_long_after_deadline() {
                 RuntimeOrigin::signed(1),
                 cid,
                 test_did(1),
-                index as ChunkIndex,
                 bounded_chunk(chunks[index].clone()),
                 proof_for(&tree, index),
             ),
@@ -592,13 +574,13 @@ fn counter_dispute_rejects_long_after_deadline() {
     });
 }
 
-// --- 22. Origin Check: Provider Identity Mismatch ---
+// --- 20. Origin Check: Provider Identity Mismatch ---
 
 #[test]
 fn counter_dispute_rejects_wrong_provider_did() {
     new_test_ext().execute_with(|| {
-        let (cid, tree, chunks) = setup_disputed_commitment(4, 100u64);
         let index = 0usize;
+        let (cid, tree, chunks) = setup_disputed_commitment(4, 100u64);
 
         let impostor_did = test_did(50);
         register_test_agent(impostor_did, 1, true);
@@ -608,7 +590,6 @@ fn counter_dispute_rejects_wrong_provider_did() {
                 RuntimeOrigin::signed(1),
                 cid,
                 impostor_did,
-                index as ChunkIndex,
                 bounded_chunk(chunks[index].clone()),
                 proof_for(&tree, index),
             ),
@@ -617,20 +598,19 @@ fn counter_dispute_rejects_wrong_provider_did() {
     });
 }
 
-// --- 23. Origin Check: Consumer Hijack Rejection ---
+// --- 21. Origin Check: Consumer Hijack Rejection ---
 
 #[test]
 fn counter_dispute_consumer_cannot_counter_as_provider() {
     new_test_ext().execute_with(|| {
-        let (cid, tree, chunks) = setup_disputed_commitment(4, 100u64);
         let index = 0usize;
+        let (cid, tree, chunks) = setup_disputed_commitment(4, 100u64);
 
         assert_noop!(
             VectorDb::counter_dispute(
                 RuntimeOrigin::signed(2),
                 cid,
                 test_did(2),
-                index as ChunkIndex,
                 bounded_chunk(chunks[index].clone()),
                 proof_for(&tree, index),
             ),
@@ -639,20 +619,19 @@ fn counter_dispute_consumer_cannot_counter_as_provider() {
     });
 }
 
-// --- 24. Origin Check: Controller Authority Rejection ---
+// --- 22. Origin Check: Controller Authority Rejection ---
 
 #[test]
 fn counter_dispute_rejects_wrong_controller() {
     new_test_ext().execute_with(|| {
-        let (cid, tree, chunks) = setup_disputed_commitment(4, 100u64);
         let index = 0usize;
+        let (cid, tree, chunks) = setup_disputed_commitment(4, 100u64);
 
         assert_noop!(
             VectorDb::counter_dispute(
                 RuntimeOrigin::signed(99),
                 cid,
                 test_did(1),
-                index as ChunkIndex,
                 bounded_chunk(chunks[index].clone()),
                 proof_for(&tree, index),
             ),
@@ -661,13 +640,13 @@ fn counter_dispute_rejects_wrong_controller() {
     });
 }
 
-// --- 25. Origin Check: Attacker Isolation ---
+// --- 23. Origin Check: Attacker Isolation ---
 
 #[test]
 fn counter_dispute_registered_attacker_cannot_counter_for_others() {
     new_test_ext().execute_with(|| {
-        let (cid, tree, chunks) = setup_disputed_commitment(4, 100u64);
         let index = 0usize;
+        let (cid, tree, chunks) = setup_disputed_commitment(4, 100u64);
 
         let attacker_did = test_did(66);
         register_test_agent(attacker_did, 66, true);
@@ -677,7 +656,6 @@ fn counter_dispute_registered_attacker_cannot_counter_for_others() {
                 RuntimeOrigin::signed(66),
                 cid,
                 attacker_did,
-                index as ChunkIndex,
                 bounded_chunk(chunks[index].clone()),
                 proof_for(&tree, index),
             ),
@@ -686,13 +664,13 @@ fn counter_dispute_registered_attacker_cannot_counter_for_others() {
     });
 }
 
-// --- 26. Precondition Check: Late-Suspension Rejection ---
+// --- 24. Precondition Check: Late-Suspension Rejection ---
 
 #[test]
 fn counter_dispute_rejects_provider_suspended_before_countering() {
     new_test_ext().execute_with(|| {
-        let (cid, tree, chunks) = setup_disputed_commitment(4, 100u64);
         let index = 0usize;
+        let (cid, tree, chunks) = setup_disputed_commitment(4, 100u64);
 
         register_test_agent(test_did(1), 1, false);
 
@@ -701,7 +679,6 @@ fn counter_dispute_rejects_provider_suspended_before_countering() {
                 RuntimeOrigin::signed(1),
                 cid,
                 test_did(1),
-                index as ChunkIndex,
                 bounded_chunk(chunks[index].clone()),
                 proof_for(&tree, index),
             ),
@@ -710,7 +687,7 @@ fn counter_dispute_rejects_provider_suspended_before_countering() {
     });
 }
 
-// --- 27. Guard Priority: NotDisputed precedes Provider DID check ---
+// --- 25. Guard Priority: NotDisputed precedes Provider DID check ---
 
 #[test]
 fn counter_dispute_not_disputed_check_precedes_provider_check() {
@@ -739,7 +716,6 @@ fn counter_dispute_not_disputed_check_precedes_provider_check() {
                 RuntimeOrigin::signed(77),
                 cid,
                 wrong_provider,
-                0u64,
                 bounded_chunk(chunks[0].clone()),
                 proof_for(&tree, 0),
             ),
@@ -748,7 +724,7 @@ fn counter_dispute_not_disputed_check_precedes_provider_check() {
     });
 }
 
-// --- 28. Guard Priority: Provider DID check precedes Controller lookup ---
+// --- 26. Guard Priority: Provider DID check precedes Controller lookup ---
 
 #[test]
 fn counter_dispute_provider_match_precedes_controller_lookup() {
@@ -761,7 +737,6 @@ fn counter_dispute_provider_match_precedes_controller_lookup() {
                 RuntimeOrigin::signed(1),
                 cid,
                 unregistered_did,
-                0u64,
                 bounded_chunk(chunks[0].clone()),
                 proof_for(&tree, 0),
             ),
@@ -770,53 +745,7 @@ fn counter_dispute_provider_match_precedes_controller_lookup() {
     });
 }
 
-// --- 29. Guard Priority: Deadline check precedes Chunk-Index check ---
-
-#[test]
-fn counter_dispute_deadline_check_precedes_chunk_index_check() {
-    new_test_ext().execute_with(|| {
-        let (cid, tree, chunks) = setup_disputed_commitment(4, 1000u64);
-
-        System::set_block_number(5000);
-        assert_noop!(
-            VectorDb::counter_dispute(
-                RuntimeOrigin::signed(1),
-                cid,
-                test_did(1),
-                999u64,
-                bounded_chunk(chunks[0].clone()),
-                proof_for(&tree, 0),
-            ),
-            Error::<Runtime>::DisputeWindowExpired
-        );
-    });
-}
-
-// --- 30. Guard Priority: Chunk-Index check precedes Proof Verification ---
-
-#[test]
-fn counter_dispute_chunk_index_check_precedes_proof_verification() {
-    new_test_ext().execute_with(|| {
-        let (cid, _tree, chunks) = setup_disputed_commitment(4, 100u64);
-
-        let bogus_proof: BoundedVec<[u8; 32], ConstU32<MAX_PROOF_DEPTH>> =
-            BoundedVec::try_from(vec![[0x00u8; 32]]).unwrap();
-
-        assert_noop!(
-            VectorDb::counter_dispute(
-                RuntimeOrigin::signed(1),
-                cid,
-                test_did(1),
-                100u64,
-                bounded_chunk(chunks[0].clone()),
-                bogus_proof,
-            ),
-            Error::<Runtime>::ChunkIndexOutOfBounds
-        );
-    });
-}
-
-// --- 31. State Mutability Safety on Rejection ---
+// --- 27. State Mutability Safety on Rejection ---
 
 #[test]
 fn counter_dispute_failed_call_does_not_mutate_storage() {
@@ -829,7 +758,6 @@ fn counter_dispute_failed_call_does_not_mutate_storage() {
             RuntimeOrigin::signed(1),
             cid,
             test_did(1),
-            0u64,
             bounded_chunk(chunks[0].clone()),
             bogus_proof,
         );
@@ -855,26 +783,25 @@ fn counter_dispute_failed_call_does_not_mutate_storage() {
     });
 }
 
-// --- 32. Larger Tree Boundary Verification (Non-Power-of-Two) ---
+// --- 28. Larger Tree Boundary Verification (Non-Power-of-Two) ---
 
 #[test]
 fn counter_dispute_succeeds_against_non_power_of_two_leaf_tree() {
     new_test_ext().execute_with(|| {
-        let (cid, tree, chunks) = setup_disputed_commitment(7, 100u64);
-        let index = 6usize;
+        let index = 6usize; // last valid index for n=7
+        let (cid, tree, chunks) = setup_disputed_commitment_at(7, 100u64, index as ChunkIndex);
 
         assert_ok!(VectorDb::counter_dispute(
             RuntimeOrigin::signed(1),
             cid,
             test_did(1),
-            index as ChunkIndex,
             bounded_chunk(chunks[index].clone()),
             proof_for(&tree, index),
         ));
     });
 }
 
-// --- 33. Multi-Dispute Independence Verification ---
+// --- 29. Multi-Dispute Independence Verification ---
 
 #[test]
 fn counter_dispute_multiple_commitments_are_independent() {
@@ -915,6 +842,7 @@ fn counter_dispute_multiple_commitments_are_independent() {
             RuntimeOrigin::signed(2),
             cid1,
             c1,
+            0u64,
             [0xEEu8; 32],
             4u64,
         ));
@@ -938,6 +866,7 @@ fn counter_dispute_multiple_commitments_are_independent() {
             RuntimeOrigin::signed(3),
             cid2,
             c2,
+            0u64,
             [0xEEu8; 32],
             4u64,
         ));
@@ -946,7 +875,6 @@ fn counter_dispute_multiple_commitments_are_independent() {
             RuntimeOrigin::signed(1),
             cid1,
             p,
-            0u64,
             bounded_chunk(chunks1[0].clone()),
             proof_for(&tree1, 0),
         ));
@@ -963,7 +891,6 @@ fn counter_dispute_multiple_commitments_are_independent() {
                 RuntimeOrigin::signed(3),
                 cid2,
                 c2,
-                0u64,
                 bounded_chunk(chunks1[0].clone()),
                 proof_for(&tree1, 0),
             ),

@@ -343,15 +343,19 @@ pub enum RaiseDisputeError {
 
 /// Consumer-side dispute initiation: flags a mismatch between the
 /// originally committed data and what was actually received off-chain.
-/// `received_chunk_hash` is the consumer's locally-computed hash of the
-/// corrupted/suspect chunk -- not re-derived here, caller supplies it.
-/// Opens the provider's response window (`counter_deadline`); a second
-/// dispute on the same `commitment_id` is rejected on-chain.
+/// `disputed_chunk_index` identifies WHICH chunk is being disputed --
+/// `counter_dispute` will later be bound to exactly this index, so it
+/// must be correct. `received_chunk_hash` is the consumer's
+/// locally-computed hash of the corrupted/suspect chunk -- not
+/// re-derived here, caller supplies it. Opens the provider's response
+/// window (`counter_deadline`); a second dispute on the same
+/// `commitment_id` is rejected on-chain.
 pub async fn raise_dispute(
     client: &OnlineClient<PolkadotConfig>,
     signer: &(impl Signer<PolkadotConfig> + Send + Sync),
     commitment_id: CommitmentId,
     consumer_did: Did,
+    disputed_chunk_index: u64,
     received_chunk_hash: [u8; 32],
     chunk_count: u64,
 ) -> Result<(), RaiseDisputeError> {
@@ -361,6 +365,7 @@ pub async fn raise_dispute(
         vec![
             Value::from_bytes(commitment_id),
             Value::from_bytes(consumer_did),
+            Value::u128(disputed_chunk_index as u128),
             Value::from_bytes(received_chunk_hash),
             Value::u128(chunk_count as u128),
         ],
@@ -513,16 +518,16 @@ pub async fn counter_dispute<S: ChunkStore>(
     store: &S,
     commitment_id: CommitmentId,
     provider_did: Did,
-    chunk_index: u64,
+    disputed_chunk_index: u64,
     total_chunks: u64,
 ) -> Result<(), CounterDisputeError> {
-    if chunk_index >= total_chunks {
-        return Err(CounterDisputeError::ChunkIndexOutOfBounds(chunk_index, total_chunks));
+    if disputed_chunk_index >= total_chunks {
+        return Err(CounterDisputeError::ChunkIndexOutOfBounds(disputed_chunk_index, total_chunks));
     }
 
     let chunks = load_all_chunks(store, commitment_id, total_chunks)?;
 
-    let target_chunk = chunks[chunk_index as usize].clone();
+    let target_chunk = chunks[disputed_chunk_index as usize].clone();
     if target_chunk.len() > MAX_CHUNK_LEN {
         return Err(CounterDisputeError::ChunkTooLarge(target_chunk.len(), MAX_CHUNK_LEN));
     }
@@ -530,21 +535,24 @@ pub async fn counter_dispute<S: ChunkStore>(
     // Rebuild the tree from the full local chunk set — proof siblings must
     // come from the same tree whose root was originally committed on-chain.
     let (_root, tree) = build_merkle_tree(&chunks);
-    let proof_hashes = generate_inclusion_proof(&tree, chunk_index as usize);
+    let proof_hashes = generate_inclusion_proof(&tree, disputed_chunk_index as usize);
     if proof_hashes.len() > MAX_PROOF_DEPTH {
         return Err(CounterDisputeError::ProofTooDeep(proof_hashes.len(), MAX_PROOF_DEPTH));
     }
 
     // --- subxt dynamic call construction ------------------------------------
     // Argument order MUST match the on-chain extrinsic signature exactly:
-    // (commitment_id, provider_did, chunk_index, chunk_data, merkle_proof).
+    // (commitment_id, provider_did, chunk_data, merkle_proof). The pallet
+    // no longer accepts a caller-supplied chunk_index -- it reads
+    // `disputed_chunk_index` back from the DisputeRecord set by
+    // `raise_dispute`, so this client's `disputed_chunk_index` param is
+    // used only to pick the right local chunk/proof, not sent on-chain.
     let tx = subxt::dynamic::tx(
         PALLET_NAME,
         "counter_dispute",
         vec![
             Value::from_bytes(commitment_id),
             Value::from_bytes(provider_did),
-            Value::u128(chunk_index as u128),
             Value::from_bytes(target_chunk),
             Value::unnamed_composite(proof_hashes.into_iter().map(Value::from_bytes)),
         ],

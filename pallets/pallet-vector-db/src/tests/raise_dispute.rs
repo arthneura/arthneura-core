@@ -4,6 +4,12 @@
 //! checks consumer-DID identity *before* the expiry boundary — the reverse of
 //! `close_commitment`'s ordering — and to confirming the fix that stops
 //! `StreamReceipts` from ever being written on an active dispute.
+//!
+//! Also covers the `disputed_chunk_index` binding fix: `raise_dispute` now
+//! records WHICH chunk is being disputed, and rejects out-of-bounds indices
+//! at raise time. This closes a soundness gap where `counter_dispute` could
+//! previously accept a proof for any convenient chunk instead of the one
+//! actually in dispute.
 
 use super::*;
 use crate::mock::RuntimeEvent;
@@ -21,7 +27,8 @@ fn setup_valid_pair() -> ([u8; 32], [u8; 32]) {
 }
 
 /// Registers and immediately acknowledges a commitment, leaving it `Active`.
-/// Returns `(commitment_id, merkle_root)`.
+/// `total_chunks` is fixed at 10 — callers picking a `disputed_chunk_index`
+/// must stay within that bound. Returns `(commitment_id, merkle_root)`.
 fn setup_active_commitment(expires_in_blocks: u64) -> ([u8; 32], [u8; 32]) {
     let (p, c) = setup_valid_pair();
     let root = test_vector_hash(1);
@@ -60,6 +67,7 @@ fn raise_dispute_happy_path_succeeds() {
             RuntimeOrigin::signed(2),
             cid,
             test_did(2),
+            0u64,
             CORRUPT_HASH,
             10u64,
         ));
@@ -78,6 +86,7 @@ fn raise_dispute_stores_correct_fields() {
             RuntimeOrigin::signed(2),
             cid,
             test_did(2),
+            3u64,
             CORRUPT_HASH,
             99u64,
         ));
@@ -96,6 +105,10 @@ fn raise_dispute_stores_correct_fields() {
             "DisputeRecord must store the ORIGINAL committed root, not the corrupt hash"
         );
         assert_eq!(dispute.received_chunk_hash, CORRUPT_HASH);
+        assert_eq!(
+            dispute.disputed_chunk_index, 3u64,
+            "DisputeRecord must store exactly the chunk index the caller supplied"
+        );
         assert_eq!(dispute.raised_at, 5u64);
         assert_eq!(dispute.counter_deadline, 15u64); // 5 + DisputeWindow(10)
         assert_eq!(dispute.verdict, None);
@@ -114,6 +127,7 @@ fn raise_dispute_emits_correct_event() {
             RuntimeOrigin::signed(2),
             cid,
             test_did(2),
+            0u64,
             CORRUPT_HASH,
             10u64,
         ));
@@ -121,6 +135,7 @@ fn raise_dispute_emits_correct_event() {
         System::assert_last_event(RuntimeEvent::VectorDb(Event::DisputeRaised {
             commitment_id: cid,
             merkle_root: root,
+            disputed_chunk_index: 0u64,
             received_chunk_hash: CORRUPT_HASH,
             counter_deadline: 13u64, // 3 + DisputeWindow(10)
         }));
@@ -139,6 +154,7 @@ fn raise_dispute_only_one_event_on_success() {
             RuntimeOrigin::signed(2),
             cid,
             test_did(2),
+            0u64,
             CORRUPT_HASH,
             10u64,
         ));
@@ -158,6 +174,7 @@ fn raise_dispute_never_writes_a_stream_receipt() {
             RuntimeOrigin::signed(2),
             cid,
             test_did(2),
+            0u64,
             CORRUPT_HASH,
             10u64,
         ));
@@ -180,7 +197,14 @@ fn raise_dispute_rejects_unsigned_origin() {
         let (cid, _root) = setup_active_commitment(100u64);
 
         assert_noop!(
-            VectorDb::raise_dispute(RuntimeOrigin::none(), cid, test_did(2), CORRUPT_HASH, 10u64,),
+            VectorDb::raise_dispute(
+                RuntimeOrigin::none(),
+                cid,
+                test_did(2),
+                0u64,
+                CORRUPT_HASH,
+                10u64,
+            ),
             DispatchError::BadOrigin
         );
     });
@@ -194,7 +218,14 @@ fn raise_dispute_rejects_root_origin() {
         let (cid, _root) = setup_active_commitment(100u64);
 
         assert_noop!(
-            VectorDb::raise_dispute(RuntimeOrigin::root(), cid, test_did(2), CORRUPT_HASH, 10u64,),
+            VectorDb::raise_dispute(
+                RuntimeOrigin::root(),
+                cid,
+                test_did(2),
+                0u64,
+                CORRUPT_HASH,
+                10u64,
+            ),
             DispatchError::BadOrigin
         );
     });
@@ -209,7 +240,7 @@ fn raise_dispute_rejects_nonexistent_commitment() {
         let bogus_cid = [0x9Au8; 32];
 
         assert_noop!(
-            VectorDb::raise_dispute(RuntimeOrigin::signed(2), bogus_cid, c, CORRUPT_HASH, 10u64),
+            VectorDb::raise_dispute(RuntimeOrigin::signed(2), bogus_cid, c, 0u64, CORRUPT_HASH, 10u64),
             Error::<Runtime>::CommitmentNotFound
         );
     });
@@ -236,7 +267,7 @@ fn raise_dispute_rejects_still_pending() {
         let cid = derive_commitment_id(p, c, root, block);
 
         assert_noop!(
-            VectorDb::raise_dispute(RuntimeOrigin::signed(2), cid, c, CORRUPT_HASH, 10u64),
+            VectorDb::raise_dispute(RuntimeOrigin::signed(2), cid, c, 0u64, CORRUPT_HASH, 10u64),
             Error::<Runtime>::NotActive
         );
     });
@@ -262,6 +293,7 @@ fn raise_dispute_fails_after_settlement() {
                 RuntimeOrigin::signed(2),
                 cid,
                 test_did(2),
+                0u64,
                 CORRUPT_HASH,
                 10u64
             ),
@@ -287,6 +319,7 @@ fn raise_dispute_double_raise_fails_with_not_active_not_dispute_already_raised()
             RuntimeOrigin::signed(2),
             cid,
             test_did(2),
+            0u64,
             CORRUPT_HASH,
             10u64,
         ));
@@ -296,6 +329,7 @@ fn raise_dispute_double_raise_fails_with_not_active_not_dispute_already_raised()
                 RuntimeOrigin::signed(2),
                 cid,
                 test_did(2),
+                0u64,
                 CORRUPT_HASH,
                 10u64
             ),
@@ -317,6 +351,7 @@ fn raise_dispute_rejects_at_exact_expiry_block() {
                 RuntimeOrigin::signed(2),
                 cid,
                 test_did(2),
+                0u64,
                 CORRUPT_HASH,
                 10u64
             ),
@@ -337,6 +372,7 @@ fn raise_dispute_accepts_at_last_valid_block() {
             RuntimeOrigin::signed(2),
             cid,
             test_did(2),
+            0u64,
             CORRUPT_HASH,
             10u64,
         ));
@@ -356,6 +392,7 @@ fn raise_dispute_rejects_long_after_expiry() {
                 RuntimeOrigin::signed(2),
                 cid,
                 test_did(2),
+                0u64,
                 CORRUPT_HASH,
                 10u64
             ),
@@ -379,6 +416,7 @@ fn raise_dispute_rejects_wrong_consumer_did() {
                 RuntimeOrigin::signed(2),
                 cid,
                 impostor_did,
+                0u64,
                 CORRUPT_HASH,
                 10u64,
             ),
@@ -399,6 +437,7 @@ fn raise_dispute_provider_cannot_raise_as_consumer() {
                 RuntimeOrigin::signed(1),
                 cid,
                 test_did(1),
+                0u64,
                 CORRUPT_HASH,
                 10u64,
             ),
@@ -419,6 +458,7 @@ fn raise_dispute_rejects_wrong_controller() {
                 RuntimeOrigin::signed(99),
                 cid,
                 test_did(2),
+                0u64,
                 CORRUPT_HASH,
                 10u64,
             ),
@@ -442,6 +482,7 @@ fn raise_dispute_registered_attacker_cannot_raise_for_others() {
                 RuntimeOrigin::signed(66),
                 cid,
                 attacker_did,
+                0u64,
                 CORRUPT_HASH,
                 10u64,
             ),
@@ -466,6 +507,7 @@ fn raise_dispute_rejects_consumer_suspended_before_raising() {
                 RuntimeOrigin::signed(2),
                 cid,
                 test_did(2),
+                0u64,
                 CORRUPT_HASH,
                 10u64
             ),
@@ -505,6 +547,7 @@ fn raise_dispute_not_active_check_precedes_consumer_check() {
                 RuntimeOrigin::signed(77),
                 cid,
                 wrong_consumer,
+                0u64,
                 CORRUPT_HASH,
                 10u64,
             ),
@@ -535,6 +578,7 @@ fn raise_dispute_consumer_check_precedes_expiry_check() {
                 RuntimeOrigin::signed(88),
                 cid,
                 wrong_consumer,
+                0u64,
                 CORRUPT_HASH,
                 10u64,
             ),
@@ -560,6 +604,7 @@ fn raise_dispute_expiry_check_precedes_eligibility_checks() {
                 RuntimeOrigin::signed(2),
                 cid,
                 test_did(2),
+                0u64,
                 CORRUPT_HASH,
                 10u64
             ),
@@ -584,6 +629,7 @@ fn raise_dispute_controller_mismatch_precedes_eligibility_check() {
                 RuntimeOrigin::signed(99),
                 cid,
                 test_did(2),
+                0u64,
                 CORRUPT_HASH,
                 10u64,
             ),
@@ -604,6 +650,7 @@ fn raise_dispute_does_not_change_active_commitment_count() {
             RuntimeOrigin::signed(2),
             cid,
             test_did(2),
+            0u64,
             CORRUPT_HASH,
             10u64,
         ));
@@ -629,6 +676,7 @@ fn raise_dispute_failed_call_does_not_mutate_storage() {
             RuntimeOrigin::signed(2),
             cid,
             test_did(2),
+            0u64,
             CORRUPT_HASH,
             10u64,
         );
@@ -654,7 +702,8 @@ fn raise_dispute_failed_call_does_not_mutate_storage() {
 //
 // `_chunk_count` is intentionally unused inside the extrinsic (see the fix that
 // removed the corrupt StreamReceipts write) — it must not appear anywhere in the
-// resulting DisputeRecord or event.
+// resulting DisputeRecord or event. Unlike `_chunk_count`, `disputed_chunk_index`
+// IS stored — the two must not be confused.
 
 #[test]
 fn raise_dispute_chunk_count_param_does_not_leak_into_storage() {
@@ -665,14 +714,14 @@ fn raise_dispute_chunk_count_param_does_not_leak_into_storage() {
             RuntimeOrigin::signed(2),
             cid,
             test_did(2),
+            0u64,
             CORRUPT_HASH,
             123_456_789u64, // arbitrary, must have zero effect
         ));
 
-        // DisputeRecord has no chunk_count field at all — confirm the type still
-        // only carries the five documented fields by checking full equality.
         let dispute = VectorDb::dispute_record(cid).unwrap();
         assert_eq!(dispute.received_chunk_hash, CORRUPT_HASH);
+        assert_eq!(dispute.disputed_chunk_index, 0u64);
     });
 }
 
@@ -728,6 +777,7 @@ fn raise_dispute_multiple_commitments_are_independent() {
             RuntimeOrigin::signed(2),
             cid1,
             c1,
+            0u64,
             CORRUPT_HASH,
             10u64,
         ));
@@ -740,5 +790,76 @@ fn raise_dispute_multiple_commitments_are_independent() {
         // cid1 must reflect the dispute.
         let stored1 = VectorDb::vector_commitment(cid1).unwrap();
         assert_eq!(stored1.status, CommitmentStatus::Disputed);
+    });
+}
+
+// --- 28. Chunk-Index Bounds Rejection (moved here from counter_dispute.rs) ---
+//
+// Formerly tested in `counter_dispute.rs` against a caller-supplied
+// `chunk_index`. After the binding fix, the bound is enforced HERE, at
+// dispute-raise time, since `counter_dispute` no longer accepts an
+// independent index at all — it only ever reads the one recorded here.
+
+#[test]
+fn raise_dispute_rejects_chunk_index_out_of_bounds() {
+    new_test_ext().execute_with(|| {
+        let (cid, _root) = setup_active_commitment(100u64); // total_chunks = 10
+
+        assert_noop!(
+            VectorDb::raise_dispute(
+                RuntimeOrigin::signed(2),
+                cid,
+                test_did(2),
+                10u64, // == total_chunks, one past the last valid index
+                CORRUPT_HASH,
+                10u64,
+            ),
+            Error::<Runtime>::ChunkIndexOutOfBounds
+        );
+    });
+}
+
+// --- 29. Chunk-Index Bounds Rejection: Max Value (moved from counter_dispute.rs) ---
+
+#[test]
+fn raise_dispute_rejects_chunk_index_far_out_of_bounds() {
+    new_test_ext().execute_with(|| {
+        let (cid, _root) = setup_active_commitment(100u64);
+
+        assert_noop!(
+            VectorDb::raise_dispute(
+                RuntimeOrigin::signed(2),
+                cid,
+                test_did(2),
+                u64::MAX,
+                CORRUPT_HASH,
+                10u64,
+            ),
+            Error::<Runtime>::ChunkIndexOutOfBounds
+        );
+    });
+}
+
+// --- 30. Guard Ordering: Eligibility Checks Precede Chunk-Index Bounds Check ---
+
+#[test]
+fn raise_dispute_eligibility_check_precedes_chunk_index_check() {
+    new_test_ext().execute_with(|| {
+        let (cid, _root) = setup_active_commitment(100u64);
+
+        // Wrong controller AND an out-of-bounds index — NotConsumer must
+        // surface first, since identity/eligibility is verified before the
+        // dispute record (and its bounds check) is ever constructed.
+        assert_noop!(
+            VectorDb::raise_dispute(
+                RuntimeOrigin::signed(99),
+                cid,
+                test_did(2),
+                999u64,
+                CORRUPT_HASH,
+                10u64,
+            ),
+            Error::<Runtime>::NotConsumer
+        );
     });
 }
