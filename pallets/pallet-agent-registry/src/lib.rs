@@ -241,6 +241,10 @@ pub mod pallet {
         StarRemoved { giver: Did, receiver: Did },
         /// Agent voluntarily deregistered; deposit returned to controller.
         AgentDeregistered { did: Did, controller: T::AccountId },
+        /// Reputation deducted by a trusted protocol-level caller (e.g.
+        /// pallet-vector-db resolving a dispute), not a peer `give_star`/
+        /// `remove_star` action. `new_score` is the post-slash value.
+        ReputationSlashed { did: Did, amount: u32, new_score: u32 },
     }
  
     // -- Errors ---------------------------------------------------------------
@@ -599,6 +603,35 @@ pub mod pallet {
             Self::deposit_event(Event::AgentDeregistered { did, controller });
  
             Ok(())
+        }
+    }
+
+    impl<T: Config> Pallet<T> {
+        /// Non-extrinsic reputation penalty for trusted protocol-level
+        /// callers (currently: pallet-vector-db's dispute resolution via
+        /// the `ReputationHandler` hook, wired in the runtime). Bypasses
+        /// every peer-action guard in `give_star`/`remove_star` --
+        /// cooldown, self-star, same-controller -- since this is not a
+        /// peer action and has no signed origin to check; the caller IS
+        /// the trusted runtime-wired pallet.
+        ///
+        /// Silently no-ops (no event, no error) if `did` is not
+        /// currently registered, e.g. the agent deregistered before the
+        /// penalty arrived. Deliberately does not return a `Result` --
+        /// a protocol penalty must never be able to fail its caller's
+        /// own extrinsic (see `ReputationHandler`'s docs in
+        /// pallet-vector-db for why this matters for a permissionless
+        /// `finalize_dispute`).
+        pub fn slash_reputation(did: &Did, amount: u32) {
+            let result = AgentProfiles::<T>::try_mutate(did, |maybe_profile| -> Result<u32, DispatchError> {
+                let profile = maybe_profile.as_mut().ok_or(Error::<T>::DidNotFound)?;
+                profile.reputation_score = profile.reputation_score.saturating_sub(amount);
+                Ok(profile.reputation_score)
+            });
+
+            if let Ok(new_score) = result {
+                Self::deposit_event(Event::ReputationSlashed { did: *did, amount, new_score });
+            }
         }
     }
 }

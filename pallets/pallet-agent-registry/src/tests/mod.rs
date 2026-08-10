@@ -22,3 +22,4 @@ mod remove_star;
 mod set_agent_status;
 mod update_profile;
 mod deregister_agent;
+mod slash_reputation;
