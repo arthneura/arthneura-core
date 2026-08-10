@@ -62,11 +62,41 @@ impl<AccountId> AgentLookup<AccountId> for () {
     }
 }
 
+/// Hook into `pallet-agent-registry`'s reputation ledger, invoked when a
+/// dispute resolves. Deliberately fire-and-forget (no `Result`, no
+/// `Weight`) -- a protocol-level reputation penalty must never be able
+/// to block or revert the caller's own dispute-resolution extrinsic
+/// (both `finalize_dispute` and `counter_dispute` are load-bearing for
+/// unwinding a `Disputed` commitment; permissionless `finalize_dispute`
+/// in particular must always succeed once its preconditions are met).
+/// Implementations should silently no-op if `did` can no longer be
+/// found (e.g. deregistered mid-dispute) rather than propagate an error.
+///
+/// Two methods, not one, by design: if only a guilty provider could be
+/// penalized, a consumer could raise disputes at zero cost -- free to
+/// spam-dispute every delivery on the chance of a payout, since a lost
+/// dispute would cost them nothing. `penalize_false_disputer` gives a
+/// baseless dispute a real (smaller) cost, closing that incentive gap.
+pub trait ReputationHandler {
+    /// A provider was found guilty (dispute went uncountered past the
+    /// response window, or was countered with an invalid proof).
+    fn penalize_provider(did: &Did);
+    /// A consumer's dispute was proven baseless -- the provider
+    /// successfully countered with a valid proof for the exact disputed
+    /// chunk.
+    fn penalize_false_disputer(did: &Did);
+}
+
+impl ReputationHandler for () {
+    fn penalize_provider(_did: &Did) {}
+    fn penalize_false_disputer(_did: &Did) {}
+}
+
 // ── Pallet Module ────────────────────────────────────────────────────────────
 
 #[frame_support::pallet]
 pub mod pallet {
-    use crate::{AgentLookup, Blake2bHasher, WeightInfo};
+    use crate::{AgentLookup, Blake2bHasher, ReputationHandler, WeightInfo};
     use frame_support::traits::Get;
     use frame_support::{pallet_prelude::*, sp_runtime::Saturating};
     use frame_system::pallet_prelude::*;
@@ -217,6 +247,26 @@ pub mod pallet {
         type DisputeWindow: Get<BlockNumberFor<Self>>;
         #[pallet::constant]
         type MaxCommitmentLifetime: Get<BlockNumberFor<Self>>;
+        /// Reputation-ledger hook, invoked on dispute resolution.
+        type ReputationHandler: ReputationHandler;
+        /// Reputation points deducted from a provider found guilty.
+        /// Deliberately larger than `FalseDisputeSlash` -- failing to
+        /// deliver (or defend) is a more severe protocol violation than
+        /// a good-faith but mistaken dispute.
+        ///
+        /// TODO(governance): migrate to a storage-backed, governance-
+        /// adjustable value once the governance pallet lands, matching
+        /// the same deferred treatment as `DisputeWindow` above.
+        #[pallet::constant]
+        type ProviderGuiltySlash: Get<u32>;
+        /// Reputation points deducted from a consumer whose dispute was
+        /// proven baseless. Nonzero so spam-disputing carries real
+        /// cost; smaller than `ProviderGuiltySlash` since a mistaken
+        /// dispute is less severe than a confirmed bad delivery.
+        ///
+        /// TODO(governance): see `ProviderGuiltySlash`.
+        #[pallet::constant]
+        type FalseDisputeSlash: Get<u32>;
     }
 
     const STORAGE_VERSION: frame_support::traits::StorageVersion =
@@ -693,9 +743,12 @@ pub mod pallet {
             dispute.verdict = Some(verdict);
             DisputeRecords::<T>::insert(commitment_id, dispute);
 
+            let consumer = commitment.consumer;
             commitment.status = CommitmentStatus::DisputeResolved;
             VectorCommitments::<T>::insert(commitment_id, commitment);
             ActiveCommitmentCount::<T>::mutate(|n| *n = n.saturating_sub(1));
+
+            T::ReputationHandler::penalize_false_disputer(&consumer);
 
             Self::deposit_event(Event::DisputeCountered {
                 commitment_id,
@@ -745,6 +798,8 @@ pub mod pallet {
             commitment.status = CommitmentStatus::DisputeResolved;
             VectorCommitments::<T>::insert(commitment_id, commitment);
             ActiveCommitmentCount::<T>::mutate(|n| *n = n.saturating_sub(1));
+
+            T::ReputationHandler::penalize_provider(&provider);
 
             Self::deposit_event(Event::DisputeFinalized {
                 commitment_id,
