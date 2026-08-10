@@ -40,6 +40,7 @@ use sp_version::RuntimeVersion;
 
 // Local module imports
 use crate::adapters::agent_registry::AgentRegistryAdapter;
+use crate::adapters::reputation_handler::ReputationHandlerAdapter;
 use super::{
     AccountId, Aura, Balance, Balances, Block, BlockNumber, Hash, Nonce, PalletInfo, Runtime,
     RuntimeCall, RuntimeEvent, RuntimeFreezeReason, RuntimeHoldReason, RuntimeOrigin, RuntimeTask,
@@ -196,4 +197,11 @@ impl pallet_vector_db::Config for Runtime {
     type DisputeWindow = ConstU32<14_400>;
     /// 100,800 blocks ≈ 7 days at 6 s/block.
     type MaxCommitmentLifetime = ConstU32<100_800>;
+    type ReputationHandler = ReputationHandlerAdapter;
+    /// Reputation points deducted from a provider found guilty of a bad
+    /// delivery. See TODO(governance) note on the Config item itself.
+    type ProviderGuiltySlash = ConstU32<5>;
+    /// Reputation points deducted from a consumer whose dispute was
+    /// proven baseless. See TODO(governance) note on the Config item.
+    type FalseDisputeSlash = ConstU32<2>;
 }
