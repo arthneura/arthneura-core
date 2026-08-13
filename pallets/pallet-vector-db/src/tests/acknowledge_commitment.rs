@@ -27,7 +27,8 @@ fn register_default(p: [u8; 32], c: [u8; 32], expires_in_blocks: u64) -> [u8; 32
         10u64,
         metadata(),
         expires_in_blocks,
-    ));
+                100u64, // price
+            ));
     derive_commitment_id(p, c, test_vector_hash(1), block)
 }
 
@@ -550,7 +551,8 @@ fn acknowledge_commitment_multiple_commitments_are_independent() {
             10u64,
             metadata(),
             100u64,
-        ));
+                100u64, // price
+            ));
         let cid1 = derive_commitment_id(p, c1, test_vector_hash(1), block);
 
         assert_ok!(VectorDb::register_commitment(
@@ -561,7 +563,8 @@ fn acknowledge_commitment_multiple_commitments_are_independent() {
             10u64,
             metadata(),
             100u64,
-        ));
+                100u64, // price
+            ));
         let cid2 = derive_commitment_id(p, c2, test_vector_hash(2), block);
 
         assert_ok!(VectorDb::acknowledge_commitment(
@@ -578,5 +581,78 @@ fn acknowledge_commitment_multiple_commitments_are_independent() {
         // cid1 must reflect the acknowledge.
         let stored1 = VectorDb::vector_commitment(cid1).unwrap();
         assert_eq!(stored1.status, CommitmentStatus::Active);
+    });
+}
+
+
+// --- Escrow: Lock on Acknowledge ---
+
+#[test]
+fn acknowledge_commitment_locks_escrow() {
+    new_test_ext().execute_with(|| {
+        let (p, c) = setup_valid_pair();
+        let root = test_vector_hash(1);
+        let block = System::block_number();
+
+        assert_ok!(VectorDb::register_commitment(
+            RuntimeOrigin::signed(1),
+            p,
+            c,
+            root,
+            10u64,
+            metadata(),
+            100u64,
+            777u64, // price
+        ));
+        let cid = derive_commitment_id(p, c, root, block);
+
+        assert_ok!(VectorDb::acknowledge_commitment(
+            RuntimeOrigin::signed(2),
+            cid,
+            c,
+        ));
+
+        assert_eq!(
+            crate::mock::escrow_calls(),
+            vec![crate::mock::EscrowCall::Lock {
+                escrow_id: cid,
+                payer: 2,
+                payee: 1,
+                amount: 777u64,
+            }],
+            "acknowledge_commitment must lock exactly the commitment's price, \
+             from the consumer's controller, payable to the provider's controller"
+        );
+    });
+}
+
+#[test]
+fn acknowledge_commitment_fails_if_escrow_lock_fails() {
+    new_test_ext().execute_with(|| {
+        let (p, c) = setup_valid_pair();
+        let root = test_vector_hash(1);
+        let block = System::block_number();
+
+        assert_ok!(VectorDb::register_commitment(
+            RuntimeOrigin::signed(1),
+            p,
+            c,
+            root,
+            10u64,
+            metadata(),
+            100u64,
+            777u64, // price
+        ));
+        let cid = derive_commitment_id(p, c, root, block);
+
+        crate::mock::set_escrow_lock_should_fail(true);
+
+        let result = VectorDb::acknowledge_commitment(RuntimeOrigin::signed(2), cid, c);
+        assert!(result.is_err(), "acknowledge_commitment must fail if escrow lock fails");
+
+        // The commitment must remain Pending -- a failed lock must not
+        // leave an Active commitment with no funds behind it.
+        let commitment = VectorDb::vector_commitment(cid).unwrap();
+        assert_eq!(commitment.status, CommitmentStatus::Pending);
     });
 }

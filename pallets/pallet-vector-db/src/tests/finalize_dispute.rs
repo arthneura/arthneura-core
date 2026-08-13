@@ -29,7 +29,8 @@ fn setup_disputed_commitment(expires_in_blocks: u64) -> ([u8; 32], [u8; 32], [u8
         10u64,
         metadata(),
         expires_in_blocks,
-    ));
+                100u64, // price
+            ));
     let cid = derive_commitment_id(p, c, root, block);
 
     assert_ok!(VectorDb::acknowledge_commitment(
@@ -199,7 +200,8 @@ fn finalize_dispute_rejects_still_active() {
             10u64,
             metadata(),
             1000u64,
-        ));
+                100u64, // price
+            ));
         let cid = derive_commitment_id(p, c, root, block);
         assert_ok!(VectorDb::acknowledge_commitment(
             RuntimeOrigin::signed(2),
@@ -231,7 +233,8 @@ fn finalize_dispute_rejects_still_pending() {
             10u64,
             metadata(),
             1000u64,
-        ));
+                100u64, // price
+            ));
         let cid = derive_commitment_id(p, c, root, block);
 
         assert_noop!(
@@ -258,7 +261,8 @@ fn finalize_dispute_rejects_settled_commitment() {
             10u64,
             metadata(),
             1000u64,
-        ));
+                100u64, // price
+            ));
         let cid = derive_commitment_id(p, c, root, block);
         assert_ok!(VectorDb::acknowledge_commitment(
             RuntimeOrigin::signed(2),
@@ -305,7 +309,8 @@ fn finalize_dispute_rejects_after_successful_counter() {
             4u64,
             metadata(),
             1000u64,
-        ));
+                100u64, // price
+            ));
         let cid = derive_commitment_id(p, c, root, block);
         assert_ok!(VectorDb::acknowledge_commitment(
             RuntimeOrigin::signed(2),
@@ -554,7 +559,8 @@ fn finalize_dispute_multiple_commitments_are_independent() {
             10u64,
             metadata(),
             1000u64,
-        ));
+                100u64, // price
+            ));
         let cid1 = derive_commitment_id(p, c1, root1, block);
         assert_ok!(VectorDb::acknowledge_commitment(
             RuntimeOrigin::signed(2),
@@ -578,7 +584,8 @@ fn finalize_dispute_multiple_commitments_are_independent() {
             10u64,
             metadata(),
             1000u64,
-        ));
+                100u64, // price
+            ));
         let cid2 = derive_commitment_id(p, c2, root2, block);
         assert_ok!(VectorDb::acknowledge_commitment(
             RuntimeOrigin::signed(3),
@@ -606,6 +613,26 @@ fn finalize_dispute_multiple_commitments_are_independent() {
         assert_eq!(
             VectorDb::dispute_record(cid1).unwrap().verdict,
             Some(DisputeVerdict::ProviderGuilty)
+        );
+    });
+}
+
+
+// --- Escrow: Refund on Guilty-Provider Verdict ---
+
+#[test]
+fn finalize_dispute_refunds_escrow() {
+    new_test_ext().execute_with(|| {
+        let (cid, _p, _c) = setup_disputed_commitment(1000u64);
+
+        System::set_block_number(12);
+        assert_ok!(VectorDb::finalize_dispute(RuntimeOrigin::signed(1), cid));
+
+        let calls = crate::mock::escrow_calls();
+        assert_eq!(
+            calls.last(),
+            Some(&crate::mock::EscrowCall::Refund { escrow_id: cid }),
+            "finalize_dispute must refund the consumer when the provider is found guilty"
         );
     });
 }

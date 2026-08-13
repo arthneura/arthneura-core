@@ -42,7 +42,8 @@ fn setup_active_commitment(expires_in_blocks: u64) -> ([u8; 32], [u8; 32]) {
         10u64,
         metadata(),
         expires_in_blocks,
-    ));
+                100u64, // price
+            ));
     let cid = derive_commitment_id(p, c, root, block);
 
     assert_ok!(VectorDb::acknowledge_commitment(
@@ -263,7 +264,8 @@ fn raise_dispute_rejects_still_pending() {
             10u64,
             metadata(),
             100u64,
-        ));
+                100u64, // price
+            ));
         let cid = derive_commitment_id(p, c, root, block);
 
         assert_noop!(
@@ -534,7 +536,8 @@ fn raise_dispute_not_active_check_precedes_consumer_check() {
             10u64,
             metadata(),
             100u64,
-        ));
+                100u64, // price
+            ));
         let cid = derive_commitment_id(p, c, root, block);
 
         let wrong_consumer = test_did(77);
@@ -749,7 +752,8 @@ fn raise_dispute_multiple_commitments_are_independent() {
             10u64,
             metadata(),
             100u64,
-        ));
+                100u64, // price
+            ));
         let cid1 = derive_commitment_id(p, c1, root1, block);
         assert_ok!(VectorDb::acknowledge_commitment(
             RuntimeOrigin::signed(2),
@@ -765,7 +769,8 @@ fn raise_dispute_multiple_commitments_are_independent() {
             10u64,
             metadata(),
             100u64,
-        ));
+                100u64, // price
+            ));
         let cid2 = derive_commitment_id(p, c2, root2, block);
         assert_ok!(VectorDb::acknowledge_commitment(
             RuntimeOrigin::signed(3),

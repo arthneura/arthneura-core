@@ -29,7 +29,8 @@ fn setup_pending_commitment(expires_in_blocks: u64) -> [u8; 32] {
         10u64,
         metadata(),
         expires_in_blocks,
-    ));
+                100u64, // price
+            ));
     derive_commitment_id(p, c, root, block)
 }
 
@@ -47,7 +48,8 @@ fn setup_active_commitment(expires_in_blocks: u64) -> [u8; 32] {
         10u64,
         metadata(),
         expires_in_blocks,
-    ));
+                100u64, // price
+            ));
     let cid = derive_commitment_id(p, c, root, block);
     assert_ok!(VectorDb::acknowledge_commitment(
         RuntimeOrigin::signed(2),
@@ -259,7 +261,8 @@ fn expire_commitment_rejects_settled_commitment() {
             10u64,
             metadata(),
             10u64,
-        ));
+                100u64, // price
+            ));
         let cid = derive_commitment_id(p, c, root, block);
         assert_ok!(VectorDb::acknowledge_commitment(
             RuntimeOrigin::signed(2),
@@ -299,7 +302,8 @@ fn expire_commitment_rejects_disputed_commitment() {
             10u64,
             metadata(),
             10u64,
-        ));
+                100u64, // price
+            ));
         let cid = derive_commitment_id(p, c, root, block);
         assert_ok!(VectorDb::acknowledge_commitment(
             RuntimeOrigin::signed(2),
@@ -340,7 +344,8 @@ fn expire_commitment_rejects_dispute_resolved_commitment() {
             10u64,
             metadata(),
             10u64,
-        ));
+                100u64, // price
+            ));
         let cid = derive_commitment_id(p, c, root, block);
         assert_ok!(VectorDb::acknowledge_commitment(
             RuntimeOrigin::signed(2),
@@ -416,7 +421,8 @@ fn expire_commitment_succeeds_even_if_both_parties_are_suspended() {
             10u64,
             metadata(),
             10u64,
-        ));
+                100u64, // price
+            ));
         let cid = derive_commitment_id(p, c, root, block);
 
         register_test_agent(p, 1, false);
@@ -494,7 +500,8 @@ fn expire_commitment_multiple_commitments_are_independent() {
             10u64,
             metadata(),
             5u64,
-        ));
+                100u64, // price
+            ));
         let cid1 = derive_commitment_id(p, c1, root1, block);
 
         assert_ok!(VectorDb::register_commitment(
@@ -505,7 +512,8 @@ fn expire_commitment_multiple_commitments_are_independent() {
             10u64,
             metadata(),
             500u64,
-        ));
+                100u64, // price
+            ));
         let cid2 = derive_commitment_id(p, c2, root2, block);
 
         System::set_block_number(6);
@@ -537,7 +545,8 @@ fn expire_commitment_already_finalized_check_precedes_not_yet_expired_check() {
             10u64,
             metadata(),
             1000u64,
-        ));
+                100u64, // price
+            ));
         let cid = derive_commitment_id(p, c, root, block);
         assert_ok!(VectorDb::acknowledge_commitment(
             RuntimeOrigin::signed(2),
