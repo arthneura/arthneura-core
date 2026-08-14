@@ -131,6 +131,7 @@ pub async fn register_commitment<S: ChunkStore>(
     payload: &[u8],
     metadata: Vec<u8>,
     expires_in_blocks: u32,
+    price: u128,
 ) -> Result<RegisterCommitmentResult, RegisterCommitmentError> {
     if metadata.len() > MAX_METADATA_LEN {
         return Err(RegisterCommitmentError::MetadataTooLarge(metadata.len(), MAX_METADATA_LEN));
@@ -163,6 +164,7 @@ pub async fn register_commitment<S: ChunkStore>(
             Value::u128(total_chunks as u128),
             Value::from_bytes(metadata),
             Value::u128(expires_in_blocks as u128),
+            Value::u128(price),
         ],
     );
 

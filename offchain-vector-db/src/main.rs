@@ -18,7 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let store = FsChunkStore::new("/tmp/arthneura-offchain-store");
 
-    match register_commitment(&client, &alice, &store, provider_did, consumer_did, &payload, metadata, 1000).await {
+    match register_commitment(&client, &alice, &store, provider_did, consumer_did, &payload, metadata, 1000, 500u128).await {
         Ok(result) => {
             println!(
                 "register_commitment succeeded: commitment_id=0x{} total_chunks={}",

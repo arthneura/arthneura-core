@@ -9740,6 +9740,7 @@ dependencies = [
  "pallet-agent-registry",
  "pallet-aura",
  "pallet-balances",
+ "pallet-escrow",
  "pallet-grandpa",
  "pallet-sudo",
  "pallet-template",

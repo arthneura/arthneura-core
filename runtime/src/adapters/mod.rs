@@ -9,4 +9,5 @@
 //! future pallet that needs the same lookup surface.
 
 pub mod agent_registry;
+pub mod escrow;
 pub mod reputation_handler;

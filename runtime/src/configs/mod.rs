@@ -40,6 +40,7 @@ use sp_version::RuntimeVersion;
 
 // Local module imports
 use crate::adapters::agent_registry::AgentRegistryAdapter;
+use crate::adapters::escrow::EscrowAdapter;
 use crate::adapters::reputation_handler::ReputationHandlerAdapter;
 use super::{
     AccountId, Aura, Balance, Balances, Block, BlockNumber, Hash, Nonce, PalletInfo, Runtime,
@@ -204,4 +205,15 @@ impl pallet_vector_db::Config for Runtime {
     /// Reputation points deducted from a consumer whose dispute was
     /// proven baseless. See TODO(governance) note on the Config item.
     type FalseDisputeSlash = ConstU32<2>;
+    type Currency = Balances;
+    type EscrowHandler = EscrowAdapter;
+}
+
+/// Configure the pallet-escrow in pallets/pallet-escrow. Generic --
+/// used today by pallet-vector-db via EscrowAdapter, and reusable by
+/// any future commitment-style pallet without duplicating
+/// lock/release/refund logic.
+impl pallet_escrow::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type Currency = Balances;
 }
