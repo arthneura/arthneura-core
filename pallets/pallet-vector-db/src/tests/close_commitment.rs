@@ -30,7 +30,8 @@ fn setup_active_commitment(expires_in_blocks: u64) -> ([u8; 32], [u8; 32]) {
         10u64,
         metadata(),
         expires_in_blocks,
-    ));
+                100u64, // price
+            ));
     let cid = derive_commitment_id(p, c, root, block);
 
     assert_ok!(VectorDb::acknowledge_commitment(
@@ -199,7 +200,8 @@ fn close_commitment_rejects_still_pending() {
             10u64,
             metadata(),
             100u64,
-        ));
+                100u64, // price
+            ));
         let cid = derive_commitment_id(p, c, root, block);
 
         assert_noop!(
@@ -428,7 +430,8 @@ fn close_commitment_not_active_check_precedes_expiry_check() {
             10u64,
             metadata(),
             5u64,
-        ));
+                100u64, // price
+            ));
         let cid = derive_commitment_id(p, c, root, block);
 
         // Well past expiry, but status is Pending, not Active — NotActive must fire first.
@@ -655,7 +658,8 @@ fn close_commitment_multiple_commitments_are_independent() {
             10u64,
             metadata(),
             100u64,
-        ));
+                100u64, // price
+            ));
         let cid1 = derive_commitment_id(p, c1, root1, block);
         assert_ok!(VectorDb::acknowledge_commitment(
             RuntimeOrigin::signed(2),
@@ -671,7 +675,8 @@ fn close_commitment_multiple_commitments_are_independent() {
             10u64,
             metadata(),
             100u64,
-        ));
+                100u64, // price
+            ));
         let cid2 = derive_commitment_id(p, c2, root2, block);
         assert_ok!(VectorDb::acknowledge_commitment(
             RuntimeOrigin::signed(3),
@@ -695,5 +700,45 @@ fn close_commitment_multiple_commitments_are_independent() {
         // cid1 must reflect settlement.
         let stored1 = VectorDb::vector_commitment(cid1).unwrap();
         assert_eq!(stored1.status, CommitmentStatus::Settled);
+    });
+}
+
+
+// --- Escrow: Release on Close ---
+
+#[test]
+fn close_commitment_releases_escrow() {
+    new_test_ext().execute_with(|| {
+        let (p, c) = setup_valid_pair();
+        let root = test_vector_hash(1);
+        let block = System::block_number();
+
+        assert_ok!(VectorDb::register_commitment(
+            RuntimeOrigin::signed(1),
+            p,
+            c,
+            root,
+            10u64,
+            metadata(),
+            100u64,
+            777u64, // price
+        ));
+        let cid = derive_commitment_id(p, c, root, block);
+        assert_ok!(VectorDb::acknowledge_commitment(RuntimeOrigin::signed(2), cid, c));
+
+        assert_ok!(VectorDb::close_commitment(
+            RuntimeOrigin::signed(2),
+            cid,
+            c,
+            root,
+            10u64,
+        ));
+
+        let calls = crate::mock::escrow_calls();
+        assert_eq!(
+            calls.last(),
+            Some(&crate::mock::EscrowCall::Release { escrow_id: cid }),
+            "close_commitment must release escrow to the provider on clean settlement"
+        );
     });
 }

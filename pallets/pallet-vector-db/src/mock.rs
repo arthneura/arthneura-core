@@ -18,6 +18,7 @@ type Block = frame_system::mocking::MockBlock<Runtime>;
 frame_support::construct_runtime!(
     pub enum Runtime {
         System:   frame_system,
+        Balances: pallet_balances,
         VectorDb: pallet_vector_db,
     }
 );
@@ -25,6 +26,12 @@ frame_support::construct_runtime!(
 #[derive_impl(frame_system::config_preludes::TestDefaultConfig)]
 impl frame_system::Config for Runtime {
     type Block = Block;
+    type AccountData = pallet_balances::AccountData<u64>;
+}
+
+#[derive_impl(pallet_balances::config_preludes::TestDefaultConfig)]
+impl pallet_balances::Config for Runtime {
+    type AccountStore = System;
 }
 
 // ── Thread-Local Mock Agent Registry ─────────────────────────────────────────
@@ -82,6 +89,62 @@ fn clear_reputation_calls() {
     REPUTATION_CALLS.with(|c| c.borrow_mut().clear());
 }
 
+// ── Mock Escrow Handler ──────────────────────────────────────────────────────
+
+// Records every EscrowHandler call, in order, so tests can assert exactly
+// which operation fired with which arguments -- without a real
+// pallet-escrow dependency in this crate's test build.
+#[derive(Clone, Debug, PartialEq)]
+pub enum EscrowCall {
+    Lock { escrow_id: [u8; 32], payer: u64, payee: u64, amount: u64 },
+    Release { escrow_id: [u8; 32] },
+    Refund { escrow_id: [u8; 32] },
+}
+
+thread_local! {
+    static ESCROW_CALLS: RefCell<Vec<EscrowCall>> = RefCell::new(Vec::new());
+    // Controls whether the next `lock` call succeeds -- lets tests
+    // simulate an insufficient-balance rejection without needing a
+    // real Currency implementation behind this mock.
+    static ESCROW_LOCK_SHOULD_FAIL: RefCell<bool> = RefCell::new(false);
+}
+
+pub struct MockEscrowHandler;
+
+impl crate::EscrowHandler<u64, u64> for MockEscrowHandler {
+    fn lock(escrow_id: [u8; 32], payer: u64, payee: u64, amount: u64) -> sp_runtime::DispatchResult {
+        if ESCROW_LOCK_SHOULD_FAIL.with(|f| *f.borrow()) {
+            return Err(sp_runtime::DispatchError::Other("mock escrow lock failure"));
+        }
+        ESCROW_CALLS.with(|c| c.borrow_mut().push(EscrowCall::Lock { escrow_id, payer, payee, amount }));
+        Ok(())
+    }
+    fn release(escrow_id: [u8; 32]) -> sp_runtime::DispatchResult {
+        ESCROW_CALLS.with(|c| c.borrow_mut().push(EscrowCall::Release { escrow_id }));
+        Ok(())
+    }
+    fn refund(escrow_id: [u8; 32]) -> sp_runtime::DispatchResult {
+        ESCROW_CALLS.with(|c| c.borrow_mut().push(EscrowCall::Refund { escrow_id }));
+        Ok(())
+    }
+}
+
+/// Returns every `EscrowHandler` call recorded so far, in order.
+pub fn escrow_calls() -> Vec<EscrowCall> {
+    ESCROW_CALLS.with(|c| c.borrow().clone())
+}
+
+/// Makes the next `EscrowHandler::lock` call fail, simulating a
+/// consumer who can't cover the commitment's price.
+pub fn set_escrow_lock_should_fail(should_fail: bool) {
+    ESCROW_LOCK_SHOULD_FAIL.with(|f| *f.borrow_mut() = should_fail);
+}
+
+fn clear_escrow_calls() {
+    ESCROW_CALLS.with(|c| c.borrow_mut().clear());
+    ESCROW_LOCK_SHOULD_FAIL.with(|f| *f.borrow_mut() = false);
+}
+
 // ── Pallet Configuration ─────────────────────────────────────────────────────
 
 parameter_types! {
@@ -102,6 +165,8 @@ impl pallet_vector_db::Config for Runtime {
     type ReputationHandler = MockReputationHandler;
     type ProviderGuiltySlash = ProviderGuiltySlash;
     type FalseDisputeSlash = FalseDisputeSlash;
+    type Currency = Balances;
+    type EscrowHandler = MockEscrowHandler;
 }
 
 // ── Test Externalities Builder ───────────────────────────────────────────────
@@ -111,9 +176,16 @@ impl pallet_vector_db::Config for Runtime {
 pub fn new_test_ext() -> sp_io::TestExternalities {
     clear_agents();
     clear_reputation_calls();
-    let storage = frame_system::GenesisConfig::<Runtime>::default()
+    clear_escrow_calls();
+    let mut storage = frame_system::GenesisConfig::<Runtime>::default()
         .build_storage()
         .unwrap();
+    pallet_balances::GenesisConfig::<Runtime> {
+        balances: vec![(1, 1_000_000), (2, 1_000_000), (3, 1_000_000)],
+        ..Default::default()
+    }
+    .assimilate_storage(&mut storage)
+    .unwrap();
     let mut ext: sp_io::TestExternalities = storage.into();
     ext.execute_with(|| System::set_block_number(1));
     ext

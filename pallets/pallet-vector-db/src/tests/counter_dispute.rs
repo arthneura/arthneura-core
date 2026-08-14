@@ -82,7 +82,8 @@ fn setup_disputed_commitment_at(
         n as u64,
         metadata(),
         expires_in_blocks,
-    ));
+                100u64, // price
+            ));
     let cid = derive_commitment_id(p, c, root, block);
 
     assert_ok!(VectorDb::acknowledge_commitment(
@@ -314,7 +315,8 @@ fn counter_dispute_rejects_still_active() {
             4u64,
             metadata(),
             100u64,
-        ));
+                100u64, // price
+            ));
         let cid = derive_commitment_id(p, c, root, block);
         assert_ok!(VectorDb::acknowledge_commitment(
             RuntimeOrigin::signed(2),
@@ -353,7 +355,8 @@ fn counter_dispute_rejects_still_pending() {
             4u64,
             metadata(),
             100u64,
-        ));
+                100u64, // price
+            ));
         let cid = derive_commitment_id(p, c, root, block);
 
         assert_noop!(
@@ -705,7 +708,8 @@ fn counter_dispute_not_disputed_check_precedes_provider_check() {
             4u64,
             metadata(),
             100u64,
-        ));
+                100u64, // price
+            ));
         let cid = derive_commitment_id(p, c, root, block);
 
         let wrong_provider = test_did(77);
@@ -884,7 +888,8 @@ fn counter_dispute_multiple_commitments_are_independent() {
             4u64,
             metadata(),
             100u64,
-        ));
+                100u64, // price
+            ));
         let cid1 = derive_commitment_id(p, c1, root1, block);
         assert_ok!(VectorDb::acknowledge_commitment(
             RuntimeOrigin::signed(2),
@@ -908,7 +913,8 @@ fn counter_dispute_multiple_commitments_are_independent() {
             4u64,
             metadata(),
             100u64,
-        ));
+                100u64, // price
+            ));
         let cid2 = derive_commitment_id(p, c2, root2, block);
         assert_ok!(VectorDb::acknowledge_commitment(
             RuntimeOrigin::signed(3),
@@ -948,6 +954,33 @@ fn counter_dispute_multiple_commitments_are_independent() {
                 proof_for(&tree1, 0),
             ),
             Error::<Runtime>::NotProvider
+        );
+    });
+}
+
+
+// --- Escrow: Release on Successfully-Countered Dispute ---
+
+#[test]
+fn counter_dispute_releases_escrow_to_provider() {
+    new_test_ext().execute_with(|| {
+        let index = 0usize;
+        let (cid, tree, chunks) = setup_disputed_commitment(4, 100u64);
+
+        assert_ok!(VectorDb::counter_dispute(
+            RuntimeOrigin::signed(1),
+            cid,
+            test_did(1),
+            bounded_chunk(chunks[index].clone()),
+            proof_for(&tree, index),
+        ));
+
+        let calls = crate::mock::escrow_calls();
+        assert_eq!(
+            calls.last(),
+            Some(&crate::mock::EscrowCall::Release { escrow_id: cid }),
+            "counter_dispute must release escrow to the provider once the \
+             disputed chunk is proven correct -- the consumer's claim failed"
         );
     });
 }

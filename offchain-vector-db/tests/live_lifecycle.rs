@@ -72,8 +72,7 @@ async fn brutal_lifecycle_suite() {
         provider_did,
         b"self trade payload".to_vec().as_slice(),
         b"meta".to_vec(),
-        1000,
-    )
+        1000, 500u128)
     .await;
     assert_pallet_error(self_trade_result, "SelfTrade");
     println!("Section 1 OK: SelfTrade rejected as expected");
@@ -90,8 +89,7 @@ async fn brutal_lifecycle_suite() {
         consumer_did,
         b"ineligible payload".to_vec().as_slice(),
         b"meta".to_vec(),
-        1000,
-    )
+        1000, 500u128)
     .await;
     assert_pallet_error(ineligible_result, "ProviderNotEligible");
     println!("Section 2 OK: ProviderNotEligible rejected as expected");
@@ -100,7 +98,7 @@ async fn brutal_lifecycle_suite() {
     // Section 3 (happy path A): register -> acknowledge -> close
     // ---------------------------------------------------------------
     let payload_a = b"happy path A payload -- settled cleanly".to_vec();
-    let commit_a = register_commitment(&client, &alice, &store, provider_did, consumer_did, &payload_a, b"meta-a".to_vec(), 1000)
+    let commit_a = register_commitment(&client, &alice, &store, provider_did, consumer_did, &payload_a, b"meta-a".to_vec(), 1000, 500u128)
         .await
         .expect("Section 3: register_commitment must succeed with eligible DIDs");
     println!("Section 3.1 OK: registered commitment_id=0x{}", hex::encode(commit_a.commitment_id));
@@ -138,7 +136,7 @@ async fn brutal_lifecycle_suite() {
     // (register a fresh one, do NOT acknowledge, try to close directly)
     // ---------------------------------------------------------------
     let payload_pending = b"pending, never acknowledged".to_vec();
-    let commit_pending = register_commitment(&client, &alice, &store, provider_did, consumer_did, &payload_pending, b"meta-p".to_vec(), 1000)
+    let commit_pending = register_commitment(&client, &alice, &store, provider_did, consumer_did, &payload_pending, b"meta-p".to_vec(), 1000, 500u128)
         .await
         .expect("Section 7 setup: register_commitment must succeed");
     let close_while_pending = close_commitment(&client, &bob, commit_pending.commitment_id, consumer_did, commit_pending.merkle_root, commit_pending.total_chunks).await;
@@ -157,7 +155,7 @@ async fn brutal_lifecycle_suite() {
     //                            -> counter_dispute (provider wins)
     // ---------------------------------------------------------------
     let payload_b = b"happy path B payload -- disputed then refuted".to_vec();
-    let commit_b = register_commitment(&client, &alice, &store, provider_did, consumer_did, &payload_b, b"meta-b".to_vec(), 1000)
+    let commit_b = register_commitment(&client, &alice, &store, provider_did, consumer_did, &payload_b, b"meta-b".to_vec(), 1000, 500u128)
         .await
         .expect("Section 9.1: register_commitment must succeed");
     acknowledge_commitment(&client, &bob, commit_b.commitment_id, consumer_did)

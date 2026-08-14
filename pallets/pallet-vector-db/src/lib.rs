@@ -92,11 +92,43 @@ impl ReputationHandler for () {
     fn penalize_false_disputer(_did: &Did) {}
 }
 
+/// Hook into a generic escrow pallet (e.g. `pallet-escrow`), invoked to
+/// move funds at each stage of a commitment's lifecycle. Reuses the
+/// commitment's own `CommitmentId` as the escrow's identifier -- one
+/// commitment, one escrow, no separate ID-generation scheme needed.
+///
+/// This pallet never touches a `Currency` trait directly for the
+/// actual fund movement -- it only knows `BalanceOf<T>` (to store a
+/// `price` on a commitment) and this trait (to ask for money to move).
+/// The concrete reserve/release/refund logic, and which currency it
+/// operates on, live entirely in whatever pallet implements this.
+pub trait EscrowHandler<AccountId, Balance> {
+    /// Reserve `amount` from `payer`, earmarked for `payee`, under `escrow_id`.
+    fn lock(escrow_id: CommitmentId, payer: AccountId, payee: AccountId, amount: Balance) -> sp_runtime::DispatchResult;
+    /// Move the funds locked under `escrow_id` to the payee named at lock time.
+    fn release(escrow_id: CommitmentId) -> sp_runtime::DispatchResult;
+    /// Return the funds locked under `escrow_id` to the payer.
+    fn refund(escrow_id: CommitmentId) -> sp_runtime::DispatchResult;
+}
+
+impl<AccountId, Balance> EscrowHandler<AccountId, Balance> for () {
+    fn lock(_escrow_id: CommitmentId, _payer: AccountId, _payee: AccountId, _amount: Balance) -> sp_runtime::DispatchResult {
+        Ok(())
+    }
+    fn release(_escrow_id: CommitmentId) -> sp_runtime::DispatchResult {
+        Ok(())
+    }
+    fn refund(_escrow_id: CommitmentId) -> sp_runtime::DispatchResult {
+        Ok(())
+    }
+}
+
 // ── Pallet Module ────────────────────────────────────────────────────────────
 
 #[frame_support::pallet]
 pub mod pallet {
-    use crate::{AgentLookup, Blake2bHasher, ReputationHandler, WeightInfo};
+    use crate::{AgentLookup, Blake2bHasher, EscrowHandler, ReputationHandler, WeightInfo};
+    use frame_support::traits::Currency;
     use frame_support::traits::Get;
     use frame_support::{pallet_prelude::*, sp_runtime::Saturating};
     use frame_system::pallet_prelude::*;
@@ -165,6 +197,11 @@ pub mod pallet {
         pub created_at: BlockNumberFor<T>,
         pub expires_at: BlockNumberFor<T>,
         pub acknowledged_at: Option<BlockNumberFor<T>>,
+        /// Price the consumer pays for this delivery. Escrowed at
+        /// `acknowledge_commitment`, released or refunded depending on
+        /// how the commitment settles. Zero is a valid price -- some
+        /// agents may choose to share data for free.
+        pub price: BalanceOf<T>,
     }
 
     // -- Stream Receipt Structure ---------------------------------------------
@@ -267,7 +304,19 @@ pub mod pallet {
         /// TODO(governance): see `ProviderGuiltySlash`.
         #[pallet::constant]
         type FalseDisputeSlash: Get<u32>;
+        /// Currency this pallet's commitments are priced in. Only used
+        /// here to define `BalanceOf<T>` for the `price` field -- the
+        /// actual reserve/release/refund logic lives entirely behind
+        /// `EscrowHandler`, not in this pallet.
+        type Currency: Currency<Self::AccountId>;
+        /// Escrow-ledger hook, invoked at each commitment settlement point.
+        type EscrowHandler: EscrowHandler<Self::AccountId, BalanceOf<Self>>;
     }
+
+    /// Balance type for [`Config::Currency`], used only to type the
+    /// `price` field on [`VectorCommitment`].
+    pub type BalanceOf<T> =
+        <<T as Config>::Currency as Currency<<T as frame_system::Config>::AccountId>>::Balance;
 
     const STORAGE_VERSION: frame_support::traits::StorageVersion =
         frame_support::traits::StorageVersion::new(1);
@@ -388,6 +437,7 @@ pub mod pallet {
             total_chunks: u64,
             metadata: BoundedVec<u8, ConstU32<MAX_METADATA_LEN>>,
             expires_in_blocks: BlockNumberFor<T>,
+            price: BalanceOf<T>,
         ) -> DispatchResult {
             let caller = ensure_signed(origin)?;
 
@@ -450,6 +500,7 @@ pub mod pallet {
                 created_at: current_block,
                 expires_at,
                 acknowledged_at: None,
+                price,
             };
 
             VectorCommitments::<T>::insert(commitment_id, commitment);
@@ -500,6 +551,14 @@ pub mod pallet {
                 T::AgentRegistry::is_active_verified(&consumer_did),
                 Error::<T>::ConsumerNotEligible
             );
+
+            // Lock the escrow before committing the state transition to
+            // storage -- if the consumer can't cover the price, this
+            // extrinsic must fail entirely, not leave an Active
+            // commitment with no funds behind it.
+            let provider_controller = T::AgentRegistry::controller_of(&commitment.provider)
+                .ok_or(Error::<T>::ProviderNotEligible)?;
+            T::EscrowHandler::lock(commitment_id, caller.clone(), provider_controller, commitment.price)?;
 
             commitment.status = CommitmentStatus::Active;
             commitment.acknowledged_at = Some(current_block);
@@ -567,6 +626,8 @@ pub mod pallet {
             commitment.status = CommitmentStatus::Settled;
             VectorCommitments::<T>::insert(commitment_id, commitment);
             ActiveCommitmentCount::<T>::mutate(|n| *n = n.saturating_sub(1));
+
+            T::EscrowHandler::release(commitment_id)?;
 
             Self::deposit_event(Event::CommitmentSettled {
                 commitment_id,
@@ -748,6 +809,7 @@ pub mod pallet {
             VectorCommitments::<T>::insert(commitment_id, commitment);
             ActiveCommitmentCount::<T>::mutate(|n| *n = n.saturating_sub(1));
 
+            T::EscrowHandler::release(commitment_id)?;
             T::ReputationHandler::penalize_false_disputer(&consumer);
 
             Self::deposit_event(Event::DisputeCountered {
@@ -799,6 +861,7 @@ pub mod pallet {
             VectorCommitments::<T>::insert(commitment_id, commitment);
             ActiveCommitmentCount::<T>::mutate(|n| *n = n.saturating_sub(1));
 
+            T::EscrowHandler::refund(commitment_id)?;
             T::ReputationHandler::penalize_provider(&provider);
 
             Self::deposit_event(Event::DisputeFinalized {

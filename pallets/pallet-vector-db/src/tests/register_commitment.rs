@@ -34,7 +34,8 @@ fn register_commitment_happy_path_succeeds() {
             100u64,
             meta.clone(),
             100u64,
-        ));
+                100u64, // price
+            ));
     });
 }
 
@@ -56,7 +57,8 @@ fn register_commitment_stores_correct_fields() {
             10u64,
             meta.clone(),
             50u64,
-        ));
+                100u64, // price
+            ));
 
         let cid = derive_commitment_id(p, c, root, current_block);
         let stored = VectorDb::vector_commitment(cid).expect("commitment must exist");
@@ -105,7 +107,8 @@ fn register_commitment_emits_correct_event() {
             50u64,
             metadata(),
             200u64,
-        ));
+                100u64, // price
+            ));
 
         let cid = derive_commitment_id(p, c, root, current_block);
         System::assert_last_event(RuntimeEvent::VectorDb(Event::CommitmentRegistered {
@@ -136,7 +139,8 @@ fn register_commitment_increments_active_count() {
             10u64,
             metadata(),
             10u64,
-        ));
+                100u64, // price
+            ));
         assert_eq!(VectorDb::active_commitment_count(), 1);
 
         System::set_block_number(2);
@@ -149,7 +153,8 @@ fn register_commitment_increments_active_count() {
             10u64,
             metadata(),
             10u64,
-        ));
+                100u64, // price
+            ));
         assert_eq!(VectorDb::active_commitment_count(), 2);
     });
 }
@@ -171,7 +176,8 @@ fn register_commitment_id_matches_offchain_derivation() {
             10u64,
             metadata(),
             100u64,
-        ));
+                100u64, // price
+            ));
 
         let expected_cid = derive_commitment_id(p, c, root, block);
         assert!(
@@ -198,7 +204,8 @@ fn register_commitment_does_not_create_receipt_or_dispute() {
             10u64,
             metadata(),
             50u64,
-        ));
+                100u64, // price
+            ));
 
         let cid = derive_commitment_id(p, c, root, block);
         assert!(
@@ -227,6 +234,7 @@ fn register_commitment_rejects_unsigned_origin() {
                 10u64,
                 metadata(),
                 10u64,
+                100u64, // price
             ),
             DispatchError::BadOrigin
         );
@@ -248,6 +256,7 @@ fn register_commitment_rejects_root_origin() {
                 10u64,
                 metadata(),
                 10u64,
+                100u64, // price
             ),
             DispatchError::BadOrigin
         );
@@ -271,6 +280,7 @@ fn register_commitment_rejects_self_trade() {
                 10u64,
                 metadata(),
                 10u64,
+                100u64, // price
             ),
             Error::<Runtime>::SelfTrade
         );
@@ -295,6 +305,7 @@ fn register_commitment_rejects_unregistered_provider() {
                 10u64,
                 metadata(),
                 10u64,
+                100u64, // price
             ),
             Error::<Runtime>::ProviderNotEligible
         );
@@ -320,6 +331,7 @@ fn register_commitment_rejects_wrong_provider_controller() {
                 10u64,
                 metadata(),
                 10u64,
+                100u64, // price
             ),
             Error::<Runtime>::NotProvider
         );
@@ -345,6 +357,7 @@ fn register_commitment_rejects_inactive_provider() {
                 10u64,
                 metadata(),
                 10u64,
+                100u64, // price
             ),
             Error::<Runtime>::ProviderNotEligible
         );
@@ -369,6 +382,7 @@ fn register_commitment_rejects_unregistered_consumer() {
                 10u64,
                 metadata(),
                 10u64,
+                100u64, // price
             ),
             Error::<Runtime>::ConsumerNotEligible
         );
@@ -394,6 +408,7 @@ fn register_commitment_rejects_inactive_consumer() {
                 10u64,
                 metadata(),
                 10u64,
+                100u64, // price
             ),
             Error::<Runtime>::ConsumerNotEligible
         );
@@ -415,6 +430,7 @@ fn register_commitment_rejects_zero_expiry() {
                 10u64,
                 metadata(),
                 0u64,
+                100u64, // price
             ),
             Error::<Runtime>::ExpiryMustBePositive
         );
@@ -435,7 +451,8 @@ fn register_commitment_accepts_minimum_expiry() {
             10u64,
             metadata(),
             1u64,
-        ));
+                100u64, // price
+            ));
     });
 }
 
@@ -453,7 +470,8 @@ fn register_commitment_accepts_max_lifetime_expiry() {
             10u64,
             metadata(),
             1_000u64,
-        ));
+                100u64, // price
+            ));
     });
 }
 
@@ -472,6 +490,7 @@ fn register_commitment_rejects_expiry_beyond_max_lifetime() {
                 10u64,
                 metadata(),
                 1_001u64,
+                100u64, // price
             ),
             Error::<Runtime>::ExpiryTooFar
         );
@@ -494,7 +513,8 @@ fn register_commitment_rejects_duplicate_in_same_block() {
             10u64,
             metadata(),
             100u64,
-        ));
+                100u64, // price
+            ));
 
         assert_noop!(
             VectorDb::register_commitment(
@@ -505,6 +525,7 @@ fn register_commitment_rejects_duplicate_in_same_block() {
                 10u64,
                 metadata(),
                 100u64,
+                100u64, // price
             ),
             Error::<Runtime>::CommitmentAlreadyExists
         );
@@ -528,7 +549,8 @@ fn register_commitment_different_blocks_produce_different_ids() {
             10u64,
             metadata(),
             100u64,
-        ));
+                100u64, // price
+            ));
         let cid1 = derive_commitment_id(p, c, root, block1);
 
         System::set_block_number(2);
@@ -541,7 +563,8 @@ fn register_commitment_different_blocks_produce_different_ids() {
             10u64,
             metadata(),
             100u64,
-        ));
+                100u64, // price
+            ));
         let cid2 = derive_commitment_id(p, c, root, block2);
 
         assert_ne!(
@@ -568,7 +591,8 @@ fn register_commitment_different_hashes_same_block_both_succeed() {
             10u64,
             metadata(),
             100u64,
-        ));
+                100u64, // price
+            ));
         assert_ok!(VectorDb::register_commitment(
             RuntimeOrigin::signed(1),
             p,
@@ -577,7 +601,8 @@ fn register_commitment_different_hashes_same_block_both_succeed() {
             10u64,
             metadata(),
             100u64,
-        ));
+                100u64, // price
+            ));
 
         assert_eq!(VectorDb::active_commitment_count(), 2);
     });
@@ -604,6 +629,7 @@ fn register_commitment_multiple_pairs_count_is_accurate() {
                 10u64,
                 metadata(),
                 50u64,
+                100u64, // price
             ));
         }
 
@@ -629,7 +655,8 @@ fn register_commitment_accepts_empty_metadata() {
             10u64,
             empty_meta.clone(),
             10u64,
-        ));
+                100u64, // price
+            ));
 
         let cid = derive_commitment_id(p, c, root, block);
         let stored = VectorDb::vector_commitment(cid).unwrap();
@@ -656,7 +683,8 @@ fn register_commitment_accepts_max_length_metadata() {
             10u64,
             max_meta.clone(),
             10u64,
-        ));
+                100u64, // price
+            ));
 
         let cid = derive_commitment_id(p, c, root, block);
         let stored = VectorDb::vector_commitment(cid).unwrap();
@@ -681,7 +709,8 @@ fn register_commitment_expires_at_is_exactly_current_plus_duration() {
             10u64,
             metadata(),
             300u64,
-        ));
+                100u64, // price
+            ));
 
         let cid = derive_commitment_id(p, c, root, 42);
         let stored = VectorDb::vector_commitment(cid).unwrap();
@@ -708,7 +737,8 @@ fn register_commitment_provider_and_consumer_have_different_controllers() {
             10u64,
             metadata(),
             10u64,
-        ));
+                100u64, // price
+            ));
     });
 }
 
@@ -728,6 +758,7 @@ fn register_commitment_self_trade_fires_before_eligibility_checks() {
                 10u64,
                 metadata(),
                 10u64,
+                100u64, // price
             ),
             Error::<Runtime>::SelfTrade
         );
@@ -753,6 +784,7 @@ fn register_commitment_consumer_suspended_after_provider_passes() {
                 10u64,
                 metadata(),
                 10u64,
+                100u64, // price
             ),
             Error::<Runtime>::ConsumerNotEligible
         );
@@ -776,6 +808,7 @@ fn register_commitment_rejects_zero_merkle_root() {
                 10u64,
                 metadata(),
                 10u64,
+                100u64, // price
             ),
             Error::<Runtime>::InvalidMerkleRoot
         );
@@ -799,7 +832,8 @@ fn register_commitment_accepts_max_value_vector_hash() {
             10u64,
             metadata(),
             10u64,
-        ));
+                100u64, // price
+            ));
 
         let cid = derive_commitment_id(p, c, max_hash, block);
         let stored = VectorDb::vector_commitment(cid).unwrap();
@@ -825,7 +859,8 @@ fn register_commitment_accepts_zero_did_as_consumer() {
             10u64,
             metadata(),
             10u64,
-        ));
+                100u64, // price
+            ));
     });
 }
 
@@ -845,7 +880,8 @@ fn register_commitment_only_one_event_on_success() {
             10u64,
             metadata(),
             50u64,
-        ));
+                100u64, // price
+            ));
 
         let events = System::events();
         assert_eq!(events.len(), 1);
@@ -867,7 +903,8 @@ fn register_commitment_failed_call_does_not_mutate_storage() {
             10u64,
             metadata(),
             0u64,
-        );
+                100u64, // price
+            );
 
         assert_eq!(VectorDb::active_commitment_count(), 0);
         assert!(

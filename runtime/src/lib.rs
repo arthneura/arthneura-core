@@ -236,4 +236,8 @@ mod runtime {
     // providers and consumers. See pallets/pallet-vector-db.
     #[runtime::pallet_index(9)]
     pub type VectorDb = pallet_vector_db;
+    // Generic escrow -- locks, releases, and refunds funds for any
+    // commitment-style deal. See pallets/pallet-escrow.
+    #[runtime::pallet_index(10)]
+    pub type Escrow = pallet_escrow;
 }
