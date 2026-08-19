@@ -175,6 +175,10 @@ impl pallet_agent_registry::Config for Runtime {
     type Currency = Balances;
     /// 100 ART (12 decimals).
     type RegistrationDeposit = ConstU128<{ 100 * UNIT }>;
+    /// 10 confirmed guilty deliveries trigger a deposit slash.
+    type StrikeThreshold = ConstU32<10>;
+    /// 10 ART burned per strike (deposit drains in 10 cycles).
+    type DepositSlashPerStrike = ConstU128<{ 10 * UNIT }>;
 }
 
 /// Configure the pallet-vector-db in pallets/pallet-vector-db.

@@ -173,6 +173,23 @@ pub mod pallet {
         /// Per-agent sybil-resistance deposit. Production: 100 ART.
         #[pallet::constant]
         type RegistrationDeposit: Get<BalanceOf<Self>>;
+        /// Number of confirmed-guilty dispute verdicts (as a provider)
+        /// that trigger a deposit slash. A single bad delivery costs
+        /// reputation and the escrowed transaction value already
+        /// (via pallet-vector-db); this is the additional, slower-
+        /// building consequence for a pattern of repeated offenses,
+        /// so an agent can't simply treat one bad delivery per
+        /// identity as a fixed, tolerable cost of doing business.
+        ///
+        /// TODO(governance): see the TODO on pallet-vector-db's
+        /// ProviderGuiltySlash -- same deferred-to-governance treatment.
+        #[pallet::constant]
+        type StrikeThreshold: Get<u32>;
+        /// Flat amount slashed from the registration deposit each time
+        /// `StrikeThreshold` is reached. Burned (dropped), not routed
+        /// to a treasury -- there is no treasury pallet yet.
+        #[pallet::constant]
+        type DepositSlashPerStrike: Get<BalanceOf<Self>>;
     }
  
     /// Balance type for [`Config::Currency`].
@@ -223,6 +240,15 @@ pub mod pallet {
         BlockNumberFor<T>,
         ValueQuery,
     >;
+
+    /// Count of confirmed-guilty dispute verdicts against this DID as a
+    /// provider (via `pallet-vector-db`'s `finalize_dispute`, not a
+    /// countered/unsubstantiated dispute). Resets to zero each time it
+    /// crosses `Config::StrikeThreshold` and triggers a deposit slash --
+    /// this is a repeated-offense counter, not a lifetime tally.
+    #[pallet::storage]
+    #[pallet::getter(fn dispute_strikes)]
+    pub type DisputeStrikes<T: Config> = StorageMap<_, Blake2_128Concat, Did, u32, ValueQuery>;
  
     // -- Events ---------------------------------------------------------------
  
@@ -245,6 +271,13 @@ pub mod pallet {
         /// pallet-vector-db resolving a dispute), not a peer `give_star`/
         /// `remove_star` action. `new_score` is the post-slash value.
         ReputationSlashed { did: Did, amount: u32, new_score: u32 },
+        /// A repeated-offense deposit slash fired -- `strikes_at_slash`
+        /// is always `Config::StrikeThreshold` (the count is reset to
+        /// zero immediately after emitting this). `amount` is what was
+        /// actually removed from the reserved deposit, which may be
+        /// less than the configured slash amount if the deposit had
+        /// already been partially depleted by an earlier slash.
+        DepositSlashed { did: Did, controller: T::AccountId, amount: BalanceOf<T>, strikes_at_slash: u32 },
     }
  
     // -- Errors ---------------------------------------------------------------
@@ -632,6 +665,57 @@ pub mod pallet {
             if let Ok(new_score) = result {
                 Self::deposit_event(Event::ReputationSlashed { did: *did, amount, new_score });
             }
+        }
+
+        /// Same reputation-slash as [`Self::slash_reputation`], but ALSO
+        /// tracks repeated-offense strikes and slashes the registration
+        /// deposit once `Config::StrikeThreshold` is reached.
+        ///
+        /// Deliberately a separate function rather than a parameter on
+        /// `slash_reputation` -- callers must opt in explicitly to strike-
+        /// tracking, since not every reputation penalty represents the
+        /// same severity of offense (a false-disputer penalty should
+        /// never count toward deposit slashing; only a confirmed-guilty
+        /// delivery should). The runtime's `ReputationHandlerAdapter`
+        /// routes `penalize_provider` here and `penalize_false_disputer`
+        /// to the plain `slash_reputation` above.
+        ///
+        /// Fire-and-forget, same as `slash_reputation` -- silently no-ops
+        /// on every step if `did` is not registered. A protocol penalty
+        /// must never be able to fail its caller's own extrinsic.
+        pub fn slash_reputation_for_guilty_delivery(did: &Did, amount: u32) {
+            Self::slash_reputation(did, amount);
+
+            let profile = match AgentProfiles::<T>::get(did) {
+                Some(p) => p,
+                None => return,
+            };
+
+            let strikes = DisputeStrikes::<T>::mutate(did, |s| {
+                *s = s.saturating_add(1);
+                *s
+            });
+
+            if strikes < T::StrikeThreshold::get() {
+                return;
+            }
+
+            // Threshold reached -- slash the deposit and reset the
+            // strike counter so the next slash requires a fresh run of
+            // StrikeThreshold offenses, not just one more.
+            DisputeStrikes::<T>::insert(did, 0u32);
+
+            let slash_amount = T::DepositSlashPerStrike::get();
+            let (_imbalance, actually_slashed) =
+                T::Currency::slash_reserved(&profile.controller, slash_amount);
+            let removed = slash_amount.saturating_sub(actually_slashed);
+
+            Self::deposit_event(Event::DepositSlashed {
+                did: *did,
+                controller: profile.controller,
+                amount: removed,
+                strikes_at_slash: strikes,
+            });
         }
     }
 }

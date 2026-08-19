@@ -34,6 +34,8 @@ impl pallet_agent_registry::Config for Runtime {
     type StarCooldown = frame_support::traits::ConstU64<10>;
     type Currency = Balances;
     type RegistrationDeposit = frame_support::traits::ConstU64<100>;
+    type StrikeThreshold = frame_support::traits::ConstU32<3>;
+    type DepositSlashPerStrike = frame_support::traits::ConstU64<20>;
 }
 
 pub fn new_test_ext() -> sp_io::TestExternalities {
