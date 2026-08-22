@@ -24,7 +24,12 @@ pub struct ReputationHandlerAdapter;
 impl pallet_vector_db::ReputationHandler for ReputationHandlerAdapter {
     fn penalize_provider(did: &pallet_vector_db::Did) {
         let amount = <Runtime as pallet_vector_db::Config>::ProviderGuiltySlash::get();
-        pallet_agent_registry::Pallet::<Runtime>::slash_reputation(did, amount);
+        // Routed to the strike-tracking variant, not plain slash_reputation --
+        // a confirmed-guilty delivery must count toward the repeated-offense
+        // deposit slash. See pallet-agent-registry's docs on
+        // slash_reputation_for_guilty_delivery for why this is a separate
+        // function rather than a flag on slash_reputation.
+        pallet_agent_registry::Pallet::<Runtime>::slash_reputation_for_guilty_delivery(did, amount);
     }
 
     fn penalize_false_disputer(did: &pallet_vector_db::Did) {
