@@ -1,7 +1,9 @@
-//! Thin binary. ACTION=register (default) or ACTION=acknowledge.
-//! Keys stay in this process. Market never sees them.
+//! Thin binary. ACTION=register|acknowledge|close.
+//! Keys stay here. Market never submits.
 
-use offchain_vector_db::{acknowledge_commitment, register_commitment, FsChunkStore};
+use offchain_vector_db::{
+    acknowledge_commitment, close_commitment, register_commitment, FsChunkStore,
+};
 use subxt::{OnlineClient, PolkadotConfig};
 
 fn hex32(name: &str) -> Result<[u8; 32], Box<dyn std::error::Error>> {
@@ -15,6 +17,13 @@ fn hex32(name: &str) -> Result<[u8; 32], Box<dyn std::error::Error>> {
     Ok(out)
 }
 
+fn signer_from_env() -> subxt_signer::sr25519::Keypair {
+    match std::env::var("SIGNER").unwrap_or_else(|_| "bob".into()).as_str() {
+        "alice" => subxt_signer::sr25519::dev::alice(),
+        _ => subxt_signer::sr25519::dev::bob(),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ws = std::env::var("CHAIN_WS").unwrap_or_else(|_| "ws://127.0.0.1:9944".into());
@@ -24,20 +33,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if action == "acknowledge" {
         let commitment_id = hex32("COMMITMENT_ID")?;
         let consumer_did = hex32("CONSUMER_DID")?;
-        let who = std::env::var("SIGNER").unwrap_or_else(|_| "bob".into());
-        let signer = match who.as_str() {
-            "alice" => subxt_signer::sr25519::dev::alice(),
-            _ => subxt_signer::sr25519::dev::bob(),
-        };
+        let signer = signer_from_env();
         match acknowledge_commitment(&client, &signer, commitment_id, consumer_did).await {
-            Ok(()) => {
-                println!(
-                    "acknowledge_commitment succeeded: commitment_id=0x{}",
-                    hex::encode(commitment_id)
-                );
-            }
+            Ok(()) => println!(
+                "acknowledge_commitment succeeded: commitment_id=0x{}",
+                hex::encode(commitment_id)
+            ),
             Err(e) => {
                 eprintln!("acknowledge_commitment returned an error: {e}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
+    if action == "close" {
+        let commitment_id = hex32("COMMITMENT_ID")?;
+        let consumer_did = hex32("CONSUMER_DID")?;
+        let merkle_root = hex32("MERKLE_ROOT")?;
+        let chunks: u64 = std::env::var("TOTAL_CHUNKS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1);
+        let signer = signer_from_env();
+        match close_commitment(
+            &client,
+            &signer,
+            commitment_id,
+            consumer_did,
+            merkle_root,
+            chunks,
+        )
+        .await
+        {
+            Ok(()) => println!(
+                "close_commitment succeeded: commitment_id=0x{}",
+                hex::encode(commitment_id)
+            ),
+            Err(e) => {
+                eprintln!("close_commitment returned an error: {e}");
                 std::process::exit(1);
             }
         }
@@ -73,14 +107,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await
     {
-        Ok(result) => {
-            println!(
-                "register_commitment succeeded: commitment_id=0x{} merkle_root=0x{} total_chunks={}",
-                hex::encode(result.commitment_id),
-                hex::encode(result.merkle_root),
-                result.total_chunks
-            );
-        }
+        Ok(result) => println!(
+            "register_commitment succeeded: commitment_id=0x{} merkle_root=0x{} total_chunks={}",
+            hex::encode(result.commitment_id),
+            hex::encode(result.merkle_root),
+            result.total_chunks
+        ),
         Err(e) => {
             eprintln!("register_commitment returned an error: {e}");
             std::process::exit(1);
