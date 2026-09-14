@@ -359,6 +359,25 @@ pub mod pallet {
     pub type DisputeWindowOverride<T: Config> =
         StorageValue<_, BlockNumberFor<T>, OptionQuery>;
 
+    #[pallet::genesis_config]
+    #[derive(frame_support::DefaultNoBound)]
+    pub struct GenesisConfig<T: Config> {
+        /// `None` = use compile-time `T::DisputeWindow` (14400 on live runtime).
+        /// `Some(n)` = this network's SLA, set by chain spec.
+        pub dispute_window: Option<BlockNumberFor<T>>,
+        #[serde(skip)]
+        pub _phantom: core::marker::PhantomData<T>,
+    }
+
+    #[pallet::genesis_build]
+    impl<T: Config> BuildGenesisConfig for GenesisConfig<T> {
+        fn build(&self) {
+            if let Some(w) = self.dispute_window {
+                DisputeWindowOverride::<T>::put(w);
+            }
+        }
+    }
+
     // -- Events ---------------------------------------------------------------
 
     #[pallet::event]

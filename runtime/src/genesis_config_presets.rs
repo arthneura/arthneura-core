@@ -29,8 +29,13 @@ fn testnet_genesis(
     initial_authorities: Vec<(AuraId, GrandpaId)>,
     endowed_accounts: Vec<AccountId>,
     root: AccountId,
+    dispute_window: Option<u32>,
 ) -> Value {
     build_struct_json_patch!(RuntimeGenesisConfig {
+        vector_db: pallet_vector_db::GenesisConfig {
+            dispute_window: dispute_window.map(|n| n.into()),
+            ..Default::default()
+        },
         balances: BalancesConfig {
             balances: endowed_accounts
                 .iter()
@@ -68,6 +73,7 @@ pub fn development_config_genesis() -> Value {
             Sr25519Keyring::BobStash.to_account_id(),
         ],
         sp_keyring::Sr25519Keyring::Alice.to_account_id(),
+        Some(10),
     )
 }
 
@@ -89,6 +95,7 @@ pub fn local_config_genesis() -> Value {
             .map(|v| v.to_account_id())
             .collect::<Vec<_>>(),
         Sr25519Keyring::Alice.to_account_id(),
+        None,
     )
 }
 
