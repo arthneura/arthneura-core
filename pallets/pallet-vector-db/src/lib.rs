@@ -325,6 +325,12 @@ pub mod pallet {
     #[pallet::storage_version(STORAGE_VERSION)]
     pub struct Pallet<T>(_);
 
+    impl<T: Config> Pallet<T> {
+        pub fn effective_dispute_window() -> BlockNumberFor<T> {
+            DisputeWindowOverride::<T>::get().unwrap_or_else(T::DisputeWindow::get)
+        }
+    }
+
     // -- Storage Declarations -------------------------------------------------
 
     #[pallet::storage]
@@ -345,6 +351,13 @@ pub mod pallet {
     #[pallet::getter(fn dispute_record)]
     pub type DisputeRecords<T: Config> =
         StorageMap<_, Blake2_128Concat, CommitmentId, DisputeRecord<T>, OptionQuery>;
+
+    /// If set, used instead of `T::DisputeWindow`.
+    /// None = testnet/default constant (14_400 on the live runtime).
+    #[pallet::storage]
+    #[pallet::getter(fn dispute_window_override)]
+    pub type DisputeWindowOverride<T: Config> =
+        StorageValue<_, BlockNumberFor<T>, OptionQuery>;
 
     // -- Events ---------------------------------------------------------------
 
@@ -694,7 +707,7 @@ pub mod pallet {
             );
 
             // 3. Initialize dispute record with provider response deadline
-            let counter_deadline = current_block.saturating_add(T::DisputeWindow::get());
+            let counter_deadline = current_block.saturating_add(Self::effective_dispute_window());
 
             // NOTE: StreamReceipts is reserved exclusively for verified, successful
             // closures (see `close_commitment`). An active dispute must never write
