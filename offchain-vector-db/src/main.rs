@@ -2,7 +2,8 @@
 //! Keys stay here. Market never submits.
 
 use offchain_vector_db::{
-    acknowledge_commitment, close_commitment, register_commitment, FsChunkStore,
+    acknowledge_commitment, close_commitment, finalize_dispute, raise_dispute,
+    register_commitment, FsChunkStore,
 };
 use subxt::{OnlineClient, PolkadotConfig};
 
@@ -43,6 +44,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match client.storage().at_latest().await?.fetch(&addr).await? {
             Some(val) => println!("BALANCE_RAW_{who}={}", val.to_value()?),
             None => println!("BALANCE_RAW_{who}=MISSING"),
+        }
+        return Ok(());
+    }
+
+    if action == "raise" {
+        let commitment_id = hex32("COMMITMENT_ID")?;
+        let consumer_did = hex32("CONSUMER_DID")?;
+        let index: u64 = std::env::var("CHUNK_INDEX")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let chunks: u64 = std::env::var("TOTAL_CHUNKS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1);
+        let bad = hex32("RECEIVED_CHUNK_HASH")?;
+        let signer = signer_from_env();
+        match raise_dispute(&client, &signer, commitment_id, consumer_did, index, bad, chunks).await {
+            Ok(()) => println!("RAISE=OK"),
+            Err(e) => {
+                eprintln!("ERROR raise_dispute failed: {e}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
+    if action == "finalize" {
+        let commitment_id = hex32("COMMITMENT_ID")?;
+        let signer = signer_from_env();
+        match finalize_dispute(&client, &signer, commitment_id).await {
+            Ok(()) => println!("FINALIZE=OK"),
+            Err(e) => {
+                eprintln!("ERROR finalize_dispute failed: {e}");
+                std::process::exit(1);
+            }
         }
         return Ok(());
     }
