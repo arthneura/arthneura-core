@@ -128,3 +128,16 @@ cargo test -p offchain-vector-db --test live_lifecycle -- --nocapture        # l
 Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the full text.
 
 Copyright 2026 ArthNeura
+
+## Local court paths (pre-testnet)
+
+Dev node (--dev): dispute window is 10 blocks via genesis.
+Testnet preset keeps compile-time 14400.
+
+Run with docker --dev node up:
+
+    ./scripts/stranger-settle.sh
+    ./scripts/stranger-dispute.sh
+    ./scripts/stranger-refund.sh
+
+Do not treat --dev window as testnet SLA.
