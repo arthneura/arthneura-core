@@ -8,7 +8,8 @@ use subxt::{OnlineClient, PolkadotConfig};
 
 fn hex32(name: &str) -> Result<[u8; 32], Box<dyn std::error::Error>> {
     let raw = std::env::var(name)?;
-    let b = hex::decode(raw.trim())?;
+    let raw = raw.trim().trim_start_matches("0x");
+    let b = hex::decode(raw)?;
     if b.len() != 32 {
         return Err(format!("{name} must be 32-byte hex").into());
     }
@@ -29,6 +30,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ws = std::env::var("CHAIN_WS").unwrap_or_else(|_| "ws://127.0.0.1:9944".into());
     let action = std::env::var("ACTION").unwrap_or_else(|_| "register".into());
     let client = OnlineClient::<PolkadotConfig>::from_url(&ws).await?;
+
+    if action == "balance" {
+        let who = std::env::var("SIGNER").unwrap_or_else(|_| "alice".into());
+        let signer = signer_from_env();
+        let account = signer.public_key().to_account_id();
+        let addr = subxt::dynamic::storage(
+            "System",
+            "Account",
+            vec![subxt::dynamic::Value::from_bytes(account)],
+        );
+        match client.storage().at_latest().await?.fetch(&addr).await? {
+            Some(val) => println!("BALANCE_RAW_{who}={}", val.to_value()?),
+            None => println!("BALANCE_RAW_{who}=MISSING"),
+        }
+        return Ok(());
+    }
 
     if action == "acknowledge" {
         let commitment_id = hex32("COMMITMENT_ID")?;
@@ -107,12 +124,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await
     {
-        Ok(result) => println!(
-            "register_commitment succeeded: commitment_id=0x{} merkle_root=0x{} total_chunks={}",
-            hex::encode(result.commitment_id),
-            hex::encode(result.merkle_root),
-            result.total_chunks
-        ),
+        Ok(result) => {
+            println!(
+                "register_commitment succeeded: commitment_id=0x{} merkle_root=0x{} total_chunks={}",
+                hex::encode(result.commitment_id),
+                hex::encode(result.merkle_root),
+                result.total_chunks
+            );
+            println!("COMMITMENT_ID=0x{}", hex::encode(result.commitment_id));
+            println!("MERKLE_ROOT=0x{}", hex::encode(result.merkle_root));
+            println!("TOTAL_CHUNKS={}", result.total_chunks);
+        }
         Err(e) => {
             eprintln!("register_commitment returned an error: {e}");
             std::process::exit(1);
