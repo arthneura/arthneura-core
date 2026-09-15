@@ -187,13 +187,14 @@ Copyright 2026 ArthNeura
 
 ## Local court paths (pre-testnet)
 
+Full walkthrough: scripts/demo.md
+
 Dev node (--dev): dispute window is 10 blocks via genesis.
 Testnet preset keeps compile-time 14400.
-
-Run with docker --dev node up:
 
     ./scripts/stranger-settle.sh
     ./scripts/stranger-dispute.sh
     ./scripts/stranger-refund.sh
+    ./scripts/stranger-counter.sh
 
 Do not treat --dev window as testnet SLA.
