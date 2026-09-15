@@ -1,122 +1,61 @@
-# 15-minute local demo
+# Local court demo
 
-Pre-testnet. Local --dev node only. Not a public network.
+Pre-testnet. Laptop and Docker. About fifteen minutes.
 
-This is the map for a first run of arthneura-core.
+If two agents never met and still need to lock money, hand over bytes, and fight about one chunk, that fight is this repo.
 
-Path the court is built for:
+The market repo is a bulletin board. It does not hold keys or funds. Do not send extrinsics from there.
 
-register two agents → lock (escrow) → deliver bytes → settle
-or dispute one chunk index.
+## Window
 
-You do not need the market repo for this demo.
+Dev genesis sets the dispute window to 10 blocks (about a minute). The testnet preset keeps 14400. Refund scripts that sleep about 90 seconds only work on --dev. Do not quote the dev window as an SLA.
 
-## 0. What you need
-
-- git
-- Docker Desktop running
-- rustup (https://rustup.rs)
-- 8 GB RAM better, first docker build is slow
-
-macOS / Linux terminal. Windows: PowerShell notes in issue
-https://github.com/arthneura/arthneura-core/issues/17
-Do not paste export FOO=bar into cmd.exe.
-
-## 1. Clone
-
-    git clone https://github.com/arthneura/arthneura-core.git
-    cd arthneura-core
-
-## 2. Rust target
-
-    rustup show
-    rustup target add wasm32-unknown-unknown
-
-The repo has rust-toolchain.toml. rustup will pick the pin.
-
-## 3. Start the node
-
-First time (slow — image build):
+## Bring the node up
 
     docker build -t arthneura-node:latest .
-    docker run -d --name arthneura-dev-node \
-      -p 9933:9933 -p 9944:9944 -p 30333:30333 \
-      arthneura-node:latest \
-      --dev --rpc-external --rpc-cors=all --rpc-methods=unsafe
+    docker rm -f arthneura-dev-node
+    docker run -d --name arthneura-dev-node -p 9944:9944 arthneura-node:latest --dev --rpc-external --rpc-cors=all --rpc-methods=unsafe
 
-Later days:
+Wait until it is importing blocks. RPC is ws://127.0.0.1:9944.
 
-    docker start arthneura-dev-node
+## Four scripts, same node, repo root
 
-If name already in use:
+Pay:
 
-    docker start arthneura-dev-node
+    ./scripts/stranger-settle.sh
 
-RPC:
+You want RESULT=SETTLED. Two agents, one commitment, lock, close.
 
-    ws://127.0.0.1:9944
+The window is not decoration:
 
-Wait ~20 seconds after start before tests.
+    ./scripts/stranger-dispute.sh
 
-## 4. Prove the machine works (no node)
+You want RAISE=OK and finalize rejected with DisputeWindowStillOpen.
 
-    cargo test --workspace --lib
+Nobody proved, so refund:
 
-This hits mock runtimes. Fail here = toolchain / compile, not the chain.
+    ./scripts/stranger-refund.sh
 
-## 5. Prove the court on the live node
+You want RESULT=REFUNDED. Only honest on --dev.
 
-Node must be up.
+Buyer raised a fake hash, seller still has the leaf on disk:
 
-    cargo test -p offchain-agent-registry --test live_lifecycle -- --nocapture
-    cargo test -p offchain-vector-db --test live_lifecycle -- --nocapture
+    ./scripts/stranger-counter.sh
 
-Exit 0 = identity + commitment + dispute path actually talked to --dev.
+You want COUNTER=OK and RESULT=COUNTERED.
+Chunks come from /tmp/arthneura-offchain-store on this machine.
+A second laptop cannot counter a raise it did not register.
 
-What those suites walk:
+## When it blows up
 
-1. Register agents (ML-DSA-65 DID, deposit, status).
-2. Commit a Merkle root and chunk count to a consumer.
-3. Acknowledge / close on the happy path.
-4. Or raise a dispute on one chunk index. Provider must prove that index, not some other leaf.
+Node not up: run the docker lines above.
+Connection refused on 9944: container still starting.
+Refund too fast on a long window: you are not on --dev.
+Counter cannot find chunks: register and counter must share that tmp store.
 
-Escrow (lock / release / refund) is in this repo and wired in the runtime.
-Live client coverage for escrow is thinner than registry + vector-db — do not invent a fourth pallet in a first PR.
+## Not in this file
 
-Offchain crates:
+Listings, offers, pull, CSV live in arthneura-market.
+No public chain, no token, no UI.
 
-    offchain-agent-registry/
-    offchain-vector-db/
-
-Binaries that read stamp / env for register, acknowledge, close live in those crates (see recent commits). This file is the order. Those binaries are the buttons. Copy env names from the crate, not from memory.
-
-## 6. Optional: bazaar after the court
-
-https://github.com/arthneura/arthneura-market
-
-Postgres + Go indexer + API. Listings and offers only. submit stays false.
-Curl cookbook: https://github.com/arthneura/arthneura-market/issues/30
-
-Skip this in the first 15 minutes.
-
-## 7. Stop
-
-    docker stop arthneura-dev-node
-
-Do not docker rm unless you want a clean slate.
-
-## 8. If it breaks
-
-- wasm target missing → step 2
-- rustc version weird → rust-toolchain.toml + rustup show
-- port 9944 busy → stop the other node
-- live tests hang → node not up or still booting
-- Windows path / env → issue #17
-- “how do I run one extrinsic” → open the matching offchain crate, do not guess flags
-
-## 9. What this demo is not
-
-Not testnet.
-Not a token faucet.
-Not “the market submitted the extrinsic.”
-Not permission to add a fourth pallet in a drive-by PR.
+Clone this repo, run the four scripts. That is the court demo.
