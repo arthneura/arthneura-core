@@ -2,7 +2,7 @@
 //! Keys stay here. Market never submits.
 
 use offchain_vector_db::{
-    acknowledge_commitment, close_commitment, finalize_dispute, raise_dispute,
+    acknowledge_commitment, close_commitment, counter_dispute, finalize_dispute, raise_dispute,
     register_commitment, FsChunkStore,
 };
 use subxt::{OnlineClient, PolkadotConfig};
@@ -65,6 +65,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(()) => println!("RAISE=OK"),
             Err(e) => {
                 eprintln!("ERROR raise_dispute failed: {e}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
+    if action == "counter" {
+        let commitment_id = hex32("COMMITMENT_ID")?;
+        let provider_did = hex32("PROVIDER_DID")?;
+        let index: u64 = std::env::var("CHUNK_INDEX")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let chunks: u64 = std::env::var("TOTAL_CHUNKS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1);
+        let signer = signer_from_env();
+        let store = FsChunkStore::new("/tmp/arthneura-offchain-store");
+        match counter_dispute(&client, &signer, &store, commitment_id, provider_did, index, chunks).await {
+            Ok(()) => println!("COUNTER=OK"),
+            Err(e) => {
+                eprintln!("ERROR counter_dispute failed: {e}");
                 std::process::exit(1);
             }
         }
