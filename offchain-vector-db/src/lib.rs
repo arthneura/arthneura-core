@@ -140,7 +140,30 @@ pub async fn register_commitment<S: ChunkStore>(
         return Err(RegisterCommitmentError::EmptyPayload);
     }
 
-    let chunks: Vec<Vec<u8>> = payload.chunks(MAX_CHUNK_LEN).map(|c| c.to_vec()).collect();
+    let mode = std::env::var("CHUNK_MODE").unwrap_or_else(|_| "bytes".into());
+    let chunks: Vec<Vec<u8>> = if mode == "rows" {
+        let mut out = Vec::new();
+        for line in payload.split(|&b| b == b'\n') {
+            let line = if !line.is_empty() && line[line.len() - 1] == b'\r' {
+                &line[..line.len() - 1]
+            } else {
+                line
+            };
+            if line.is_empty() {
+                continue;
+            }
+            if line.len() > MAX_CHUNK_LEN {
+                return Err(RegisterCommitmentError::EmptyPayload);
+            }
+            out.push(line.to_vec());
+        }
+        if out.is_empty() {
+            return Err(RegisterCommitmentError::EmptyPayload);
+        }
+        out
+    } else {
+        payload.chunks(MAX_CHUNK_LEN).map(|c| c.to_vec()).collect()
+    };
     let (root, _tree) = build_merkle_tree(&chunks);
     let total_chunks = chunks.len() as u64;
 
