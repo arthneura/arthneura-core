@@ -15,12 +15,12 @@ echo "=== 1. provider agent (Alice) ==="
 PROVIDER_LINE="$(SIGNER=alice LABEL=provider cargo run -q -p offchain-agent-registry)"
 echo "$PROVIDER_LINE"
 PROVIDER_DID="$(echo "$PROVIDER_LINE" | sed -n 's/^DID=//p' | tail -n 1)"
-[ -n "$PROVIDER_DID" ] || { echo "ERROR provider DID nahi mili"; exit 1; }
+[ -n "$PROVIDER_DID" ] || { echo "ERROR missing provider DID"; exit 1; }
 echo "=== 2. consumer agent (Bob) ==="
 CONSUMER_LINE="$(SIGNER=bob LABEL=consumer cargo run -q -p offchain-agent-registry)"
 echo "$CONSUMER_LINE"
 CONSUMER_DID="$(echo "$CONSUMER_LINE" | sed -n 's/^DID=//p' | tail -n 1)"
-[ -n "$CONSUMER_DID" ] || { echo "ERROR consumer DID nahi mili"; exit 1; }
+[ -n "$CONSUMER_DID" ] || { echo "ERROR missing consumer DID"; exit 1; }
 echo "=== 3. balances BEFORE ==="
 SIGNER=alice ACTION=balance cargo run -q -p offchain-vector-db
 SIGNER=bob ACTION=balance cargo run -q -p offchain-vector-db
