@@ -7,8 +7,9 @@ PRICE="${PRICE:-1000}"
 BAD_HASH="0000000000000000000000000000000000000000000000000000000000000001"
 
 echo "=== 0. node ==="
-if ! docker ps --format '{{.Names}}' | grep -q '^arthneura-dev-node$'; then
-  echo "ERROR node nahi chal raha."
+code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:9944 || true)
+if [ "$code" = "000" ] || [ -z "$code" ]; then
+  echo "ERROR node is not reachable on 9944"
   exit 1
 fi
 

@@ -91,7 +91,7 @@ If those hang, the node is down.
 5. The provider has to prove *that* chunk. A proof of some other leaf does not count. That hole existed once. It is closed.
 6. Reputation moves through a runtime hook. Nobody calls `slash_reputation` from a wallet.
 
-A single 15-minute path for a stranger (register → lock → deliver → settle) is [#16](https://github.com/arthneura/arthneura-core/issues/16). Not in this file yet on purpose.
+A 15-minute local path is scripts/demo.md. From the sibling arthneura repo you can also docker compose up, then run ./scripts/stranger-settle.sh.
 
 ## The three pallets
 
@@ -163,7 +163,6 @@ env-setup/         local env, not committed secrets if you can help it
 
 Read open issues before writing code.
 
-- [#16](https://github.com/arthneura/arthneura-core/issues/16) — 15-minute demo path
 - [#17](https://github.com/arthneura/arthneura-core/issues/17) — Windows / PowerShell env
 
 Docs-only PRs are fine. Runtime changes need a test that fails without the patch.
