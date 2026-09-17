@@ -390,6 +390,7 @@ pub mod pallet {
             merkle_root: MerkleRoot,
             total_chunks: u64,
             expires_at: BlockNumberFor<T>,
+            metadata: BoundedVec<u8, ConstU32<MAX_METADATA_LEN>>,
         },
         CommitmentAcknowledged {
             commitment_id: CommitmentId,
@@ -521,6 +522,7 @@ pub mod pallet {
             );
 
             // 6. Write commitment record and increment global metrics
+            let metadata_for_event = metadata.clone();
             let commitment = VectorCommitment::<T> {
                 commitment_id,
                 provider: provider_did,
@@ -545,6 +547,7 @@ pub mod pallet {
                 merkle_root,
                 total_chunks,
                 expires_at,
+                metadata: metadata_for_event,
             });
             Ok(())
         }
