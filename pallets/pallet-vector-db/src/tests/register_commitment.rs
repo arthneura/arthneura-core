@@ -117,6 +117,7 @@ fn register_commitment_emits_correct_event() {
             consumer: c,
             merkle_root: root,
             total_chunks: 50u64,
+            metadata: metadata(),
             expires_at: current_block + 200,
         }));
     });
