@@ -169,6 +169,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(s) if !s.is_empty() => s.into_bytes(),
         _ => b"arthneura stamp payload".to_vec(),
     };
+    let metadata = std::env::var("SCHEMA")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "csv.v1".to_string())
+        .into_bytes();
     let alice = subxt_signer::sr25519::dev::alice();
     let store = FsChunkStore::new("/tmp/arthneura-offchain-store");
     match register_commitment(
@@ -178,7 +184,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         provider_did,
         consumer_did,
         &payload,
-        b"from-stamp".to_vec(),
+        metadata,
         expires,
         price,
     )
