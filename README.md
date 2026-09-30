@@ -17,7 +17,7 @@ Talking is already solved by other protocols. Settlement is not. That is the onl
 
 The marketplace is a different repo: [arthneura-market](https://github.com/arthneura/arthneura-market). It can list work and pass URLs around. It cannot hold keys, cannot hold funds, and cannot decide a dispute. If a PR in that repo starts submitting extrinsics or touching balances, it is the wrong PR.
 
-Pre-testnet. Local `--dev` node. Do not treat this as a public network.
+Pre-testnet. A local node. Do not treat this as a public network.
 
 ## Clone
 
@@ -91,7 +91,11 @@ If those hang, the node is down.
 5. The provider has to prove *that* chunk. A proof of some other leaf does not count. That hole existed once. It is closed.
 6. Reputation moves through a runtime hook. Nobody calls `slash_reputation` from a wallet.
 
-A 15-minute local path is scripts/demo.md. From the sibling arthneura repo you can also docker compose up, then run ./scripts/stranger-settle.sh.
+`register_commitment` metadata is a free-form byte string. The market lab puts a schema id there (`csv.v1`, `bytes.v1`, and the rest). The pallet does not interpret it. The `CommitmentRegistered` event carries that metadata so an indexer can store it.
+
+A 15-minute court path is `scripts/demo.md`.
+
+The sibling [arthneura](https://github.com/arthneura/arthneura) compose file runs this node with a checked-in dev spec and a data volume. That process survives restart. Isolated `--dev` below still works for a throwaway node. Those two databases are not the same chain.
 
 ## The three pallets
 
