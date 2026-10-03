@@ -110,6 +110,47 @@ pub async fn register_agent(
 }
 
 // -----------------------------------------------------------------------
+pub async fn submit_signed_registration(
+    client: &OnlineClient<PolkadotConfig>,
+    signer: &(impl SubxtSigner<PolkadotConfig> + Send + Sync),
+    pubkey: Vec<u8>,
+    signature: Vec<u8>,
+    signed_at_block: u32,
+    capabilities: u32,
+    metadata: Vec<u8>,
+    label: Vec<u8>,
+) -> Result<Did, RegisterAgentError> {
+    let did: Did = {
+        let mut preimage = DID_DOMAIN_TAG.to_vec();
+        preimage.extend_from_slice(&pubkey);
+        blake2_256(&preimage)
+    };
+    let tx = subxt::dynamic::tx(
+        PALLET_NAME,
+        "register_agent",
+        vec![
+            Value::from_bytes(pubkey),
+            Value::from_bytes(signature),
+            Value::u128(signed_at_block as u128),
+            Value::u128(capabilities as u128),
+            Value::from_bytes(metadata),
+            Value::from_bytes(label),
+        ],
+    );
+    let events = client
+        .tx()
+        .sign_and_submit_then_watch_default(&tx, signer)
+        .await?
+        .wait_for_finalized_success()
+        .await?;
+    events
+        .iter()
+        .filter_map(|e| e.ok())
+        .find(|e| e.pallet_name() == PALLET_NAME && e.variant_name() == "AgentRegistered")
+        .ok_or(RegisterAgentError::EventMissing)?;
+    Ok(did)
+}
+
 // update_profile client
 // -----------------------------------------------------------------------
 
