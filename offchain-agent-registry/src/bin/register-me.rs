@@ -1,8 +1,6 @@
 //! Make a key on this machine, sign the door challenge, ask Alice to pay.
 
 use std::fs;
-use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::path::PathBuf;
 
 use ml_dsa::{Generate, KeyExport, Keypair, MlDsa65, Signer, SigningKey};
@@ -11,15 +9,17 @@ use sp_core::blake2_256;
 
 fn http(method: &str, path: &str, body: &str) -> String {
     let door = std::env::var("DOOR").unwrap_or_else(|_| "127.0.0.1:8790".into());
-    let mut stream = TcpStream::connect(&door).expect("door down");
-    let req = format!(
-        "{method} {path} HTTP/1.1\r\nHost: {door}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-        body.len()
-    );
-    stream.write_all(req.as_bytes()).unwrap();
-    let mut out = String::new();
-    stream.read_to_string(&mut out).unwrap();
-    out.split("\r\n\r\n").nth(1).unwrap_or("").to_string()
+    let url = format!("http://{door}{path}");
+    let mut cmd = std::process::Command::new("curl");
+    cmd.args(["-sf", "-X", method, &url]);
+    if !body.is_empty() {
+        cmd.args(["-H", "content-type: application/json", "-d", body]);
+    }
+    let out = cmd.output().expect("curl missing");
+    if !out.status.success() {
+        panic!("door {method} {path}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    String::from_utf8(out.stdout).unwrap()
 }
 
 fn main() {

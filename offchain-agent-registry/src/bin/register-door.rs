@@ -32,14 +32,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(_) => continue,
         };
         let mut buf = Vec::new();
-        let mut tmp = [0u8; 1024];
+        let mut tmp = [0u8; 4096];
         loop {
             let n = stream.read(&mut tmp).unwrap_or(0);
             if n == 0 {
                 break;
             }
             buf.extend_from_slice(&tmp[..n]);
-            if buf.windows(4).any(|w| w == b"\r\n\r\n") || buf.len() > 8192 {
+            if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                let head = String::from_utf8_lossy(&buf[..i]).to_ascii_lowercase();
+                let need = head.lines().find_map(|l| l.strip_prefix("content-length:"))
+                    .and_then(|n| n.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                if buf.len() >= i + 4 + need || buf.len() > 65536 {
+                    break;
+                }
+            }
+            if buf.len() > 65536 {
                 break;
             }
         }
