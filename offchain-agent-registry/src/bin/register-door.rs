@@ -31,9 +31,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(s) => s,
             Err(_) => continue,
         };
-        let mut buf = [0u8; 8192];
-        let n = stream.read(&mut buf).unwrap_or(0);
-        let req = String::from_utf8_lossy(&buf[..n]);
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 1024];
+        loop {
+            let n = stream.read(&mut tmp).unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&tmp[..n]);
+            if buf.windows(4).any(|w| w == b"\r\n\r\n") || buf.len() > 8192 {
+                break;
+            }
+        }
+        if buf.is_empty() {
+            continue;
+        }
+        let req = String::from_utf8_lossy(&buf);
         let line = req.lines().next().unwrap_or("");
         if line.starts_with("GET /v1/register/challenge") {
             let block = client.blocks().at_latest().await?;
