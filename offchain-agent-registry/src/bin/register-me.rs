@@ -65,8 +65,17 @@ fn main() {
     })
     .to_string();
     let res = http("POST", "/v1/register", &body);
-    let key_path = dir.join("me.json");
-    fs::write(&key_path, hex::encode(signing_key.to_bytes().to_vec())).unwrap();
+    let pass = std::env::var("KEYSTORE_PASS").unwrap_or_else(|_| "dev-passphrase".into());
+    let key_label = std::env::var("KEY_LABEL").unwrap_or_else(|_| "me".into());
+    offchain_agent_registry::keystore::save_identity(
+        &dir,
+        &key_label,
+        did,
+        &signing_key.to_bytes(),
+        &pass,
+    )
+    .expect("keystore save");
+    let key_path = dir.join(format!("{key_label}.json"));
     println!("DID=0x{}", hex::encode(did));
     println!("KEY={key_path:?}");
     println!("{res}");
