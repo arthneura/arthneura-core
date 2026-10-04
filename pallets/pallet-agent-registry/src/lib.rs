@@ -12,6 +12,7 @@
 //! - [`ActiveAgentCount`]: live agent population counter
 
 #![cfg_attr(not(feature = "std"), no_std)]
+#![allow(clippy::clone_on_copy)]
  
 use frame_support::weights::Weight;
 pub use pallet::*;
