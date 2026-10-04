@@ -8,8 +8,13 @@ use serde_json::{json, Value};
 use sp_core::blake2_256;
 
 fn http(method: &str, path: &str, body: &str) -> String {
-    let door = std::env::var("DOOR").unwrap_or_else(|_| "127.0.0.1:8790".into());
-    let url = format!("http://{door}{path}");
+    let door = std::env::var("DOOR").unwrap_or_else(|_| "http://127.0.0.1:8790".into());
+    let base = if door.starts_with("http://") || door.starts_with("https://") {
+        door
+    } else {
+        format!("http://{door}")
+    };
+    let url = format!("{base}{path}");
     let mut cmd = std::process::Command::new("curl");
     cmd.args(["-sf", "-X", method, &url]);
     if !body.is_empty() {
