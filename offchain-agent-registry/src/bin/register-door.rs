@@ -139,14 +139,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let address = subxt::utils::MultiAddress::Id(subxt::utils::AccountId32(account.try_into().unwrap()));
             let signature = subxt::utils::MultiSignature::Sr25519(sig);
             let submitted = partial.sign_with_address_and_signature(&address, &signature);
-            match submitted.submit_and_watch().await {
-                Ok(w) => match w.wait_for_finalized_success().await {
-                    Ok(_) => respond(&mut stream, "200 OK", r#"{"status":"registered"}"#),
-                    Err(e) => {
-                        let body = json!({"error": e.to_string()}).to_string();
-                        respond(&mut stream, "400 Bad Request", &body);
-                    }
-                },
+            match submitted.submit().await {
+                Ok(h) => {
+                    let body = json!({"status":"submitted","hash": hex::encode(h.0)}).to_string();
+                    respond(&mut stream, "200 OK", &body);
+                }
                 Err(e) => {
                     let body = json!({"error": e.to_string()}).to_string();
                     respond(&mut stream, "400 Bad Request", &body);
