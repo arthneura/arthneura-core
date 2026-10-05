@@ -139,14 +139,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let address = subxt::utils::MultiAddress::Id(subxt::utils::AccountId32(account.try_into().unwrap()));
             let signature = subxt::utils::MultiSignature::Sr25519(sig);
             let submitted = partial.sign_with_address_and_signature(&address, &signature);
-            match submitted.submit_and_watch().await {
-                Ok(w) => match w.wait_for_finalized_success().await {
-                    Ok(_) => respond(&mut stream, "200 OK", r#"{"status":"registered"}"#),
-                    Err(e) => {
-                        let body = json!({"error": e.to_string()}).to_string();
-                        respond(&mut stream, "400 Bad Request", &body);
-                    }
-                },
+            let encoded = submitted.encoded().to_vec();
+            let rpc = subxt::backend::rpc::RpcClient::from_url(
+                std::env::var("CHAIN_WS").unwrap_or_else(|_| "ws://127.0.0.1:9944".into()),
+            )
+            .await
+            .expect("rpc");
+            let dry: Result<String, _> = rpc
+                .request(
+                    "system_dryRun",
+                    subxt::backend::rpc::rpc_params![format!("0x{}", hex::encode(&encoded))],
+                )
+                .await;
+            match submitted.submit().await {
+                Ok(h) => {
+                    let body = json!({
+                        "status":"submitted",
+                        "hash": hex::encode(h.0),
+                        "dry": format!("{dry:?}"),
+                    }).to_string();
+                    respond(&mut stream, "200 OK", &body);
+                }
                 Err(e) => {
                     let body = json!({"error": e.to_string()}).to_string();
                     respond(&mut stream, "400 Bad Request", &body);
@@ -168,7 +181,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 respond(&mut stream, "400 Bad Request", r#"{"error":"account must be 32-byte hex"}"#);
                 continue;
             }
-            let amount: u128 = std::env::var("FUND_AMOUNT").ok().and_then(|s| s.parse().ok()).unwrap_or(2_000_000_000_000);
+            let amount: u128 = std::env::var("FUND_AMOUNT").ok().and_then(|s| s.parse().ok()).unwrap_or(101_000_000_000_000);
             let dest = subxt::dynamic::Value::unnamed_variant(
                 "Id",
                 vec![subxt::dynamic::Value::from_bytes(account)],

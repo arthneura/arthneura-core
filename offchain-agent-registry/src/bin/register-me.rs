@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use sp_core::blake2_256;
 
 fn http(method: &str, path: &str, body: &str) -> String {
-    let door = std::env::var("DOOR").unwrap_or_else(|_| "http://127.0.0.1:8790".into());
+    let door = std::env::var("DOOR").or_else(|_| std::env::var("DOOR_URL")).unwrap_or_else(|_| "http://127.0.0.1:8790".into());
     let base = if door.starts_with("http://") || door.starts_with("https://") {
         door
     } else {
@@ -22,7 +22,11 @@ fn http(method: &str, path: &str, body: &str) -> String {
     }
     let out = cmd.output().expect("curl missing");
     if !out.status.success() {
-        panic!("door {method} {path}: {}", String::from_utf8_lossy(&out.stderr));
+        panic!(
+            "door {method} {path}: {}{}",
+            String::from_utf8_lossy(&out.stderr),
+            String::from_utf8_lossy(&out.stdout),
+        );
     }
     String::from_utf8(out.stdout).unwrap()
 }
@@ -73,31 +77,52 @@ fn main() {
             buf
         };
         let account = subxt_signer::sr25519::Keypair::from_secret_key(account_seed).expect("account");
-        let account_id = account.public_key().to_account_id();
-        let fund_body = json!({"account": hex::encode(account_id.0)}).to_string();
-        let funded = http("POST", "/v1/fund", &fund_body);
-        println!("FUND={funded}");
-        let ws = std::env::var("CHAIN_WS").unwrap_or_else(|_| "ws://127.0.0.1:9944".into());
-        let rt = tokio::runtime::Runtime::new().expect("rt");
-        let did_owned = rt.block_on(async {
-            let client = subxt::OnlineClient::<subxt::PolkadotConfig>::from_url(&ws).await.expect("chain");
-            offchain_agent_registry::register_agent(
-                &client,
-                &account,
-                1,
-                b"door".to_vec(),
-                label.into_bytes(),
-            )
-            .await
-            .expect("register")
-        });
-        offchain_agent_registry::keystore::save_identity(&dir, &key_label, did_owned.did, &did_owned.signing_key_bytes, &pass).expect("id");
-        offchain_agent_registry::keystore::save_identity(&dir, &format!("{key_label}-account"), did_owned.did, &account_seed, &pass).expect("acct");
+        let account_hex = hex::encode(account.public_key().0);
+        println!("FUND={}", http("POST", "/v1/fund", &json!({"account": account_hex}).to_string()));
+        let ch: Value = serde_json::from_str(&http("GET", &format!("/v1/register/challenge?account={account_hex}"), "")).expect("challenge");
+        let block = ch["block"].as_u64().unwrap() as u32;
+        let mut g = [0u8; 32];
+        let mut c = [0u8; 32];
+        let mut h = [0u8; 32];
+        g.copy_from_slice(&hex::decode(ch["genesis"].as_str().unwrap()).unwrap());
+        c.copy_from_slice(&hex::decode(ch["controller"].as_str().unwrap()).unwrap());
+        h.copy_from_slice(&hex::decode(ch["hash"].as_str().unwrap()).unwrap());
+        let challenge = codec::Encode::encode(&(g, did, c, block, h));
+        let mldsa = signing_key.sign(&challenge).encode().to_vec();
+        let prep: Value = serde_json::from_str(&http(
+            "POST",
+            "/v1/prepare",
+            &json!({
+                "account": account_hex,
+                "pubkey": hex::encode(&pubkey),
+                "signature": hex::encode(&mldsa),
+                "signed_at_block": block,
+                "label": label,
+            }).to_string(),
+        )).expect("prepare");
+        if prep.get("error").is_some() {
+            println!("PREPARE={prep}");
+            return;
+        }
+        let payload = hex::decode(prep["payload"].as_str().unwrap()).unwrap();
+        let msg: Vec<u8> = if payload.len() > 256 {
+            sp_core::blake2_256(&payload).to_vec()
+        } else {
+            payload
+        };
+        let sig = account.sign(&msg);
+        let done = http(
+            "POST",
+            "/v1/finish",
+            &json!({"token": prep["token"], "account": account_hex, "signature": hex::encode(sig)}).to_string(),
+        );
+        offchain_agent_registry::keystore::save_identity(&dir, &key_label, did, &signing_key.to_bytes(), &pass).expect("id");
+        offchain_agent_registry::keystore::save_identity(&dir, &format!("{key_label}-account"), did, &account_seed, &pass).expect("acct");
         let seed_path = dir.join("controller.seed");
         std::fs::write(&seed_path, hex::encode(account_seed)).expect("seed");
-        println!("DID=0x{}", hex::encode(did_owned.did));
+        println!("DID=0x{}", hex::encode(did));
         println!("CONTROLLER_SEED_FILE={seed_path:?}");
-        println!("OWN_CONTROLLER=1");
+        println!("FINISH={done}");
         return;
     }
     let res = http("POST", "/v1/register", &body);
