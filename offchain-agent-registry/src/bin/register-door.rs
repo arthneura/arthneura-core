@@ -69,6 +69,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             respond(&mut stream, "200 OK", &body);
             continue;
         }
+        if line.starts_with("POST /v1/fund") {
+            let raw = req.split("\r\n\r\n").nth(1).unwrap_or("");
+            let v: serde_json::Value = match serde_json::from_str(raw) {
+                Ok(v) => v,
+                Err(_) => {
+                    respond(&mut stream, "400 Bad Request", r#"{"error":"bad json"}"#);
+                    continue;
+                }
+            };
+            let account = hex::decode(v["account"].as_str().unwrap_or("").trim_start_matches("0x")).unwrap_or_default();
+            if account.len() != 32 {
+                respond(&mut stream, "400 Bad Request", r#"{"error":"account must be 32-byte hex"}"#);
+                continue;
+            }
+            let amount: u128 = std::env::var("FUND_AMOUNT").ok().and_then(|s| s.parse().ok()).unwrap_or(2_000_000_000_000);
+            let dest = subxt::dynamic::Value::unnamed_variant(
+                "Id",
+                vec![subxt::dynamic::Value::from_bytes(account)],
+            );
+            let tx = subxt::dynamic::tx(
+                "Balances",
+                "transfer_keep_alive",
+                vec![dest, subxt::dynamic::Value::u128(amount)],
+            );
+            match client
+                .tx()
+                .sign_and_submit_then_watch_default(&tx, &signer())
+                .await
+            {
+                Ok(w) => match w.wait_for_finalized_success().await {
+                    Ok(_) => respond(&mut stream, "200 OK", r#"{"status":"funded"}"#),
+                    Err(e) => {
+                        let body = json!({"error": e.to_string()}).to_string();
+                        respond(&mut stream, "400 Bad Request", &body);
+                    }
+                },
+                Err(e) => {
+                    let body = json!({"error": e.to_string()}).to_string();
+                    respond(&mut stream, "400 Bad Request", &body);
+                }
+            }
+            continue;
+        }
         if line.starts_with("POST /v1/register") {
             let raw = req.split("\r\n\r\n").nth(1).unwrap_or("");
             let v: serde_json::Value = match serde_json::from_str(raw) {
