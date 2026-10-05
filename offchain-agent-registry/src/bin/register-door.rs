@@ -24,6 +24,7 @@ fn respond(mut stream: impl Write, status: &str, body: &str) {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ws = std::env::var("CHAIN_WS").unwrap_or_else(|_| "ws://127.0.0.1:9944".into());
     let client = OnlineClient::<PolkadotConfig>::from_url(&ws).await?;
+    let rpc = subxt::backend::rpc::RpcClient::from_url(&ws).await?;
     let listener = TcpListener::bind("127.0.0.1:8790")?;
     println!("REGISTER_DOOR=127.0.0.1:8790");
     for incoming in listener.incoming() {
@@ -110,6 +111,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     respond(&mut stream, "400 Bad Request", &body);
                 }
             }
+            continue;
+        }
+        if line.starts_with("POST /v1/submit") {
+            let raw = req.split("\r\n\r\n").nth(1).unwrap_or("");
+            let v: serde_json::Value = match serde_json::from_str(raw) {
+                Ok(v) => v,
+                Err(_) => {
+                    respond(&mut stream, "400 Bad Request", r#"{"error":"bad json"}"#);
+                    continue;
+                }
+            };
+            let tx_hex = v["tx"].as_str().unwrap_or("").trim().trim_start_matches("0x");
+            let bytes = hex::decode(tx_hex).unwrap_or_default();
+            if bytes.is_empty() {
+                respond(&mut stream, "400 Bad Request", r#"{"error":"tx hex required"}"#);
+                continue;
+            }
+            let mut params = subxt::backend::rpc::rpc_params![format!("0x{tx_hex}")];
+            let hash = match rpc.request::<String>("author_submitExtrinsic", params).await {
+                Ok(h) => h,
+                Err(e) => {
+                    let body = json!({"error": e.to_string()}).to_string();
+                    respond(&mut stream, "400 Bad Request", &body);
+                    continue;
+                }
+            };
+            let body = json!({"status":"submitted","hash": hash}).to_string();
+            respond(&mut stream, "200 OK", &body);
             continue;
         }
         if line.starts_with("POST /v1/register") {
