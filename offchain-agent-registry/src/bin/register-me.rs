@@ -102,7 +102,12 @@ fn main() {
             return;
         }
         let payload = hex::decode(prep["payload"].as_str().unwrap()).unwrap();
-        let sig = account.sign(&payload);
+        let msg: Vec<u8> = if payload.len() > 256 {
+            sp_core::blake2_256(&payload).to_vec()
+        } else {
+            payload
+        };
+        let sig = account.sign(&msg);
         let done = http(
             "POST",
             "/v1/finish",

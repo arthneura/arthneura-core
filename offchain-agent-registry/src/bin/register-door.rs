@@ -139,9 +139,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let address = subxt::utils::MultiAddress::Id(subxt::utils::AccountId32(account.try_into().unwrap()));
             let signature = subxt::utils::MultiSignature::Sr25519(sig);
             let submitted = partial.sign_with_address_and_signature(&address, &signature);
+            let encoded = submitted.encoded().to_vec();
+            let rpc = subxt::backend::rpc::RpcClient::from_url(
+                std::env::var("CHAIN_WS").unwrap_or_else(|_| "ws://127.0.0.1:9944".into()),
+            )
+            .await
+            .expect("rpc");
+            let dry: Result<String, _> = rpc
+                .request(
+                    "system_dryRun",
+                    subxt::backend::rpc::rpc_params![format!("0x{}", hex::encode(&encoded))],
+                )
+                .await;
             match submitted.submit().await {
                 Ok(h) => {
-                    let body = json!({"status":"submitted","hash": hex::encode(h.0)}).to_string();
+                    let body = json!({
+                        "status":"submitted",
+                        "hash": hex::encode(h.0),
+                        "dry": format!("{dry:?}"),
+                    }).to_string();
                     respond(&mut stream, "200 OK", &body);
                 }
                 Err(e) => {
