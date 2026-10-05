@@ -64,9 +64,43 @@ fn main() {
         "label": label,
     })
     .to_string();
-    let res = http("POST", "/v1/register", &body);
     let pass = std::env::var("KEYSTORE_PASS").unwrap_or_else(|_| "dev-passphrase".into());
     let key_label = std::env::var("KEY_LABEL").unwrap_or_else(|_| "me".into());
+    if std::env::var("OWN_CONTROLLER").ok().as_deref() == Some("1") {
+        let account_seed: [u8; 32] = {
+            let mut buf = [0u8; 32];
+            getrandom::fill(&mut buf).expect("rng");
+            buf
+        };
+        let account = subxt_signer::sr25519::Keypair::from_secret_key(account_seed).expect("account");
+        let account_id = account.public_key().to_account_id();
+        let fund_body = json!({"account": hex::encode(account_id.0)}).to_string();
+        let funded = http("POST", "/v1/fund", &fund_body);
+        println!("FUND={funded}");
+        let ws = std::env::var("CHAIN_WS").unwrap_or_else(|_| "ws://127.0.0.1:9944".into());
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let did_owned = rt.block_on(async {
+            let client = subxt::OnlineClient::<subxt::PolkadotConfig>::from_url(&ws).await.expect("chain");
+            offchain_agent_registry::register_agent(
+                &client,
+                &account,
+                1,
+                b"door".to_vec(),
+                label.into_bytes(),
+            )
+            .await
+            .expect("register")
+        });
+        offchain_agent_registry::keystore::save_identity(&dir, &key_label, did_owned.did, &did_owned.signing_key_bytes, &pass).expect("id");
+        offchain_agent_registry::keystore::save_identity(&dir, &format!("{key_label}-account"), did_owned.did, &account_seed, &pass).expect("acct");
+        let seed_path = dir.join("controller.seed");
+        std::fs::write(&seed_path, hex::encode(account_seed)).expect("seed");
+        println!("DID=0x{}", hex::encode(did_owned.did));
+        println!("CONTROLLER_SEED_FILE={seed_path:?}");
+        println!("OWN_CONTROLLER=1");
+        return;
+    }
+    let res = http("POST", "/v1/register", &body);
     offchain_agent_registry::keystore::save_identity(
         &dir,
         &key_label,
