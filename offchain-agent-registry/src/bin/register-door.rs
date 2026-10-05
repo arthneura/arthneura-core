@@ -27,6 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rpc = subxt::backend::rpc::RpcClient::from_url(&ws).await?;
     let listener = TcpListener::bind("127.0.0.1:8790")?;
     println!("REGISTER_DOOR=127.0.0.1:8790");
+    let mut pending = std::collections::HashMap::<String, subxt::tx::PartialExtrinsic<PolkadotConfig, OnlineClient<PolkadotConfig>>>::new();
     for incoming in listener.incoming() {
         let mut stream = match incoming {
             Ok(s) => s,
@@ -60,14 +61,97 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let line = req.lines().next().unwrap_or("");
         if line.starts_with("GET /v1/register/challenge") {
             let block = client.blocks().at_latest().await?;
+            let q = line.split('?').nth(1).unwrap_or("").split(' ').next().unwrap_or("");
+            let controller = q.split('&').find_map(|p| p.strip_prefix("account=")).unwrap_or("");
+            let controller = if controller.len() == 64 { controller.to_string() } else { hex::encode(signer().public_key().0) };
             let body = json!({
                 "genesis": hex::encode(client.genesis_hash().0),
-                "controller": hex::encode(signer().public_key().0),
+                "controller": controller,
                 "block": block.number(),
                 "hash": hex::encode(block.hash().0),
             })
             .to_string();
             respond(&mut stream, "200 OK", &body);
+            continue;
+        }
+        if line.starts_with("POST /v1/prepare") {
+            let raw = req.split("\r\n\r\n").nth(1).unwrap_or("");
+            let v: serde_json::Value = match serde_json::from_str(raw) {
+                Ok(v) => v,
+                Err(_) => { respond(&mut stream, "400 Bad Request", r#"{"error":"bad json"}"#); continue; }
+            };
+            let account = hex::decode(v["account"].as_str().unwrap_or("").trim_start_matches("0x")).unwrap_or_default();
+            let pubkey = hex::decode(v["pubkey"].as_str().unwrap_or("").trim_start_matches("0x")).unwrap_or_default();
+            let signature = hex::decode(v["signature"].as_str().unwrap_or("").trim_start_matches("0x")).unwrap_or_default();
+            let signed_at_block = v["signed_at_block"].as_u64().unwrap_or(0);
+            let label = v["label"].as_str().unwrap_or("").as_bytes().to_vec();
+            if account.len() != 32 || pubkey.is_empty() || signature.is_empty() || signed_at_block == 0 {
+                respond(&mut stream, "400 Bad Request", r#"{"error":"account, pubkey, signature, signed_at_block required"}"#);
+                continue;
+            }
+            let tx = subxt::dynamic::tx(
+                "AgentRegistry",
+                "register_agent",
+                vec![
+                    subxt::dynamic::Value::from_bytes(pubkey),
+                    subxt::dynamic::Value::from_bytes(signature),
+                    subxt::dynamic::Value::u128(signed_at_block as u128),
+                    subxt::dynamic::Value::u128(1),
+                    subxt::dynamic::Value::from_bytes(b"door".to_vec()),
+                    subxt::dynamic::Value::from_bytes(label),
+                ],
+            );
+            let account_id = subxt::utils::AccountId32(account.try_into().unwrap());
+            let partial = match client.tx().create_partial_signed(&tx, &account_id, Default::default()).await {
+                Ok(p) => p,
+                Err(e) => {
+                    let body = json!({"error": e.to_string()}).to_string();
+                    respond(&mut stream, "400 Bad Request", &body);
+                    continue;
+                }
+            };
+            let payload = hex::encode(partial.signer_payload());
+            let token = format!("p{}", pending.len());
+            pending.insert(token.clone(), partial);
+            let body = json!({"token": token, "payload": payload}).to_string();
+            respond(&mut stream, "200 OK", &body);
+            continue;
+        }
+        if line.starts_with("POST /v1/finish") {
+            let raw = req.split("\r\n\r\n").nth(1).unwrap_or("");
+            let v: serde_json::Value = match serde_json::from_str(raw) {
+                Ok(v) => v,
+                Err(_) => { respond(&mut stream, "400 Bad Request", r#"{"error":"bad json"}"#); continue; }
+            };
+            let token = v["token"].as_str().unwrap_or("").to_string();
+            let sigb = hex::decode(v["signature"].as_str().unwrap_or("").trim_start_matches("0x")).unwrap_or_default();
+            let account = hex::decode(v["account"].as_str().unwrap_or("").trim_start_matches("0x")).unwrap_or_default();
+            if sigb.len() != 64 || account.len() != 32 {
+                respond(&mut stream, "400 Bad Request", r#"{"error":"account and 64-byte signature required"}"#);
+                continue;
+            }
+            let Some(partial) = pending.remove(&token) else {
+                respond(&mut stream, "400 Bad Request", r#"{"error":"unknown token"}"#);
+                continue;
+            };
+            let mut sig = [0u8; 64];
+            sig.copy_from_slice(&sigb);
+            let address = subxt::utils::MultiAddress::Id(subxt::utils::AccountId32(account.try_into().unwrap()));
+            let signature = subxt::utils::MultiSignature::Sr25519(sig);
+            let submitted = partial.sign_with_address_and_signature(&address, &signature);
+            match submitted.submit_and_watch().await {
+                Ok(w) => match w.wait_for_finalized_success().await {
+                    Ok(_) => respond(&mut stream, "200 OK", r#"{"status":"registered"}"#),
+                    Err(e) => {
+                        let body = json!({"error": e.to_string()}).to_string();
+                        respond(&mut stream, "400 Bad Request", &body);
+                    }
+                },
+                Err(e) => {
+                    let body = json!({"error": e.to_string()}).to_string();
+                    respond(&mut stream, "400 Bad Request", &body);
+                }
+            }
             continue;
         }
         if line.starts_with("POST /v1/fund") {
