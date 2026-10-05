@@ -181,7 +181,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 respond(&mut stream, "400 Bad Request", r#"{"error":"account must be 32-byte hex"}"#);
                 continue;
             }
-            let amount: u128 = std::env::var("FUND_AMOUNT").ok().and_then(|s| s.parse().ok()).unwrap_or(2_000_000_000_000);
+            let amount: u128 = std::env::var("FUND_AMOUNT").ok().and_then(|s| s.parse().ok()).unwrap_or(101_000_000_000_000);
             let dest = subxt::dynamic::Value::unnamed_variant(
                 "Id",
                 vec![subxt::dynamic::Value::from_bytes(account)],

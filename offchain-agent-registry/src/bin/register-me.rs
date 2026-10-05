@@ -80,11 +80,14 @@ fn main() {
         let account_hex = hex::encode(account.public_key().0);
         println!("FUND={}", http("POST", "/v1/fund", &json!({"account": account_hex}).to_string()));
         let ch: Value = serde_json::from_str(&http("GET", &format!("/v1/register/challenge?account={account_hex}"), "")).expect("challenge");
-        let block = ch["block"].as_u64().unwrap();
-        let h = hex::decode(ch["hash"].as_str().unwrap()).unwrap();
-        let g = hex::decode(ch["genesis"].as_str().unwrap()).unwrap();
-        let c = hex::decode(ch["controller"].as_str().unwrap()).unwrap();
-        let challenge = codec::Encode::encode(&(g, did, c, block as u32, h));
+        let block = ch["block"].as_u64().unwrap() as u32;
+        let mut g = [0u8; 32];
+        let mut c = [0u8; 32];
+        let mut h = [0u8; 32];
+        g.copy_from_slice(&hex::decode(ch["genesis"].as_str().unwrap()).unwrap());
+        c.copy_from_slice(&hex::decode(ch["controller"].as_str().unwrap()).unwrap());
+        h.copy_from_slice(&hex::decode(ch["hash"].as_str().unwrap()).unwrap());
+        let challenge = codec::Encode::encode(&(g, did, c, block, h));
         let mldsa = signing_key.sign(&challenge).encode().to_vec();
         let prep: Value = serde_json::from_str(&http(
             "POST",
