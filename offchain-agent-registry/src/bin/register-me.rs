@@ -120,6 +120,8 @@ fn main() {
         offchain_agent_registry::keystore::save_identity(&dir, &format!("{key_label}-account"), did, &account_seed, &pass).expect("acct");
         let seed_path = dir.join("controller.seed");
         std::fs::write(&seed_path, hex::encode(account_seed)).expect("seed");
+        let did_path = dir.join("owner.did");
+        std::fs::write(&did_path, hex::encode(did)).expect("did");
         println!("DID=0x{}", hex::encode(did));
         println!("CONTROLLER_SEED_FILE={seed_path:?}");
         println!("FINISH={done}");
