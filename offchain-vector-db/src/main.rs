@@ -20,6 +20,14 @@ fn hex32(name: &str) -> Result<[u8; 32], Box<dyn std::error::Error>> {
 }
 
 fn signer_from_env() -> subxt_signer::sr25519::Keypair {
+    if let Ok(s) = std::env::var("CONTROLLER_SEED") {
+        if !s.trim().is_empty() {
+            let raw = hex::decode(s.trim().trim_start_matches("0x")).expect("CONTROLLER_SEED hex");
+            let mut seed = [0u8; 32];
+            seed.copy_from_slice(&raw);
+            return subxt_signer::sr25519::Keypair::from_secret_key(seed.into()).expect("seed");
+        }
+    }
     match std::env::var("SIGNER").unwrap_or_else(|_| "bob".into()).as_str() {
         "alice" => subxt_signer::sr25519::dev::alice(),
         _ => subxt_signer::sr25519::dev::bob(),
