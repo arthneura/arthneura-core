@@ -175,7 +175,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "csv.v1".to_string())
         .into_bytes();
-    let alice = subxt_signer::sr25519::dev::alice();
+    let alice = match std::env::var("CONTROLLER_SEED") {
+        Ok(s) if !s.trim().is_empty() => {
+            let raw = hex::decode(s.trim().trim_start_matches("0x")).expect("CONTROLLER_SEED hex");
+            let mut seed = [0u8; 32];
+            seed.copy_from_slice(&raw);
+            subxt_signer::sr25519::Keypair::from_secret_key(seed.into()).expect("seed")
+        }
+        _ => subxt_signer::sr25519::dev::alice(),
+    };
     let store = FsChunkStore::new("/tmp/arthneura-offchain-store");
     match register_commitment(
         &client,
