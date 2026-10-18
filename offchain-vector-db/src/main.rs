@@ -132,6 +132,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    if action == "transfer" {
+        let to = hex32("TO")?;
+        let amount: u128 = std::env::var("AMOUNT").unwrap_or_else(|_| "100".into()).parse()?;
+        let signer = subxt_signer::sr25519::dev::alice();
+        let dest = subxt::utils::AccountId32::from(to);
+        let tx = subxt::dynamic::tx("Balances", "transfer_allow_death", vec![
+            subxt::dynamic::Value::from_bytes(dest),
+            subxt::dynamic::Value::u128(amount),
+        ]);
+        let _events = client.tx().sign_and_submit_then_watch_default(&tx, &signer).await?
+            .wait_for_finalized_success().await?;
+        println!("TRANSFER=OK");
+        return Ok(());
+    }
     if action == "close" {
         let commitment_id = hex32("COMMITMENT_ID")?;
         let consumer_did = hex32("CONSUMER_DID")?;
