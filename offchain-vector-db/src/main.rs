@@ -138,7 +138,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let signer = subxt_signer::sr25519::dev::alice();
         let dest = subxt::utils::AccountId32::from(to);
         let tx = subxt::dynamic::tx("Balances", "transfer_allow_death", vec![
+<<<<<<< HEAD
+            subxt::dynamic::Value::unnamed_variant("Id", vec![subxt::dynamic::Value::from_bytes(dest.0.to_vec())]),
+=======
             subxt::dynamic::Value::from_bytes(dest),
+>>>>>>> origin/main
             subxt::dynamic::Value::u128(amount),
         ]);
         let _events = client.tx().sign_and_submit_then_watch_default(&tx, &signer).await?
