@@ -38,7 +38,7 @@ fn signer_from_env() -> subxt_signer::sr25519::Keypair {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ws = std::env::var("CHAIN_WS").unwrap_or_else(|_| "ws://127.0.0.1:9944".into());
     let action = std::env::var("ACTION").unwrap_or_else(|_| "register".into());
-    let client = OnlineClient::<PolkadotConfig>::from_url(&ws).await?;
+    let client = OnlineClient::<PolkadotConfig>::from_insecure_url(&ws).await?;
 
     if action == "balance" {
         let who = std::env::var("SIGNER").unwrap_or_else(|_| "alice".into());
@@ -138,11 +138,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let signer = subxt_signer::sr25519::dev::alice();
         let dest = subxt::utils::AccountId32::from(to);
         let tx = subxt::dynamic::tx("Balances", "transfer_allow_death", vec![
-<<<<<<< HEAD
             subxt::dynamic::Value::unnamed_variant("Id", vec![subxt::dynamic::Value::from_bytes(dest.0.to_vec())]),
-=======
-            subxt::dynamic::Value::from_bytes(dest),
->>>>>>> origin/main
             subxt::dynamic::Value::u128(amount),
         ]);
         let _events = client.tx().sign_and_submit_then_watch_default(&tx, &signer).await?
