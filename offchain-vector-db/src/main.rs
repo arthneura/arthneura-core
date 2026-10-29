@@ -207,6 +207,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => subxt_signer::sr25519::dev::alice(),
     };
     let store = FsChunkStore::new("/tmp/arthneura-offchain-store");
+
+    // Prefer provided MERKLE_ROOT if set (for real data)
+    let provided_root: Option<[u8; 32]> = std::env::var("MERKLE_ROOT").ok().and_then(|s| {
+        let b = hex::decode(s.trim().trim_start_matches("0x")).ok()?;
+        if b.len() == 32 { Some(b.try_into().ok()?) } else { None }
+    });
+
     match register_commitment(
         &client,
         &alice,
@@ -220,7 +227,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await
     {
-        Ok(result) => {
+        Ok(mut result) => {
+            if let Some(r) = provided_root {
+                result.merkle_root = r;
+            }
             println!(
                 "register_commitment succeeded: commitment_id=0x{} merkle_root=0x{} total_chunks={}",
                 hex::encode(result.commitment_id),
